@@ -1,0 +1,84 @@
+<main class="page">
+  <header class="hero">
+    <h1>Biometric Credential Demo</h1>
+    <p>Angular + Capacitor app that exercises the plugin on mobile devices.</p>
+    <p class="scenario">Scenario: {{ scenarioName }}</p>
+  </header>
+
+  <section class="card actions presets">
+    <button (click)="applyScenarioHappyPath()" [disabled]="loading">Preset: Happy</button>
+    <button (click)="applyScenarioInvalidChallenge()" [disabled]="loading">Preset: Invalid Challenge</button>
+    <button (click)="applyScenarioMissingSelector()" [disabled]="loading">Preset: Missing Selector</button>
+    <button (click)="applyScenarioCompatibilityMode()" [disabled]="loading">Preset: Compat</button>
+  </section>
+
+  <section class="card form-grid">
+    <label>
+      <span>User ID</span>
+      <input [(ngModel)]="userId" />
+    </label>
+
+    <label>
+      <span>Credential ID</span>
+      <input [(ngModel)]="credentialId" />
+    </label>
+
+    <label class="full-row">
+      <span>Challenge (base64url)</span>
+      <textarea rows="3" [(ngModel)]="challenge"></textarea>
+    </label>
+
+    <label>
+      <span>Selector Mode</span>
+      <select [(ngModel)]="selectorMode">
+        <option value="both">userId + credentialId</option>
+        <option value="credentialId">credentialId only</option>
+        <option value="userId">userId only</option>
+        <option value="none">none (should fail)</option>
+      </select>
+    </label>
+
+    <label class="checkbox">
+      <input type="checkbox" [(ngModel)]="requireStrongBiometry" />
+      <span>requireStrongBiometry</span>
+    </label>
+
+    <label class="checkbox">
+      <input type="checkbox" [(ngModel)]="requireHardwareBackedKey" />
+      <span>requireHardwareBackedKey</span>
+    </label>
+
+    <label class="checkbox">
+      <input type="checkbox" [(ngModel)]="detectCompromisedDevice" />
+      <span>detectCompromisedDevice</span>
+    </label>
+
+    <button (click)="regenerateChallenge()" [disabled]="loading">Regenerate Challenge</button>
+  </section>
+
+  <section class="card actions">
+    <button (click)="checkBiometry()" [disabled]="loading">checkBiometry</button>
+    <button (click)="checkRegistration()" [disabled]="loading">checkRegistration</button>
+    <button (click)="registerCredential()" [disabled]="loading">registerCredential</button>
+    <button (click)="authenticate()" [disabled]="loading">authenticate</button>
+    <button (click)="removeCredential()" [disabled]="loading">removeCredential</button>
+  </section>
+
+  @if (loading) {
+    <section class="card status">Running operation...</section>
+  }
+
+  @if (lastError) {
+    <section class="card error">
+      <h2>Last Error</h2>
+      <pre>{{ lastError }}</pre>
+    </section>
+  }
+
+  @if (lastResult) {
+    <section class="card output">
+      <h2>Last Result</h2>
+      <pre>{{ lastResult }}</pre>
+    </section>
+  }
+</main>

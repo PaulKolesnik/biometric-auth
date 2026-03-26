@@ -1,0 +1,44 @@
+{
+  "name": "capacitor-secure-biometric-credential-plugin",
+  "version": "0.1.0",
+  "description": "Capacitor plugin for biometric-gated cryptographic credentials",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "ios",
+    "android",
+    "Package.swift",
+    "README.md",
+    "docs"
+  ],
+  "capacitor": {
+    "ios": {
+      "src": "ios"
+    },
+    "android": {
+      "src": "android"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rimraf dist",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "keywords": [
+    "capacitor",
+    "biometric",
+    "security",
+    "credential"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@capacitor/core": "^7.0.0"
+  },
+  "devDependencies": {
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.3"
+  }
+}
