@@ -38,13 +38,20 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "removeCredential", returnType: CAPPluginReturnPromise)
     ]
 
+    /// Reports biometric availability and device readiness using LocalAuthentication.
+    /// Resolves with capability flags and a normalized error code when unavailable.
+    /// LAContext docs: https://developer.apple.com/documentation/localauthentication/lacontext
     @objc func checkBiometry(_ call: CAPPluginCall) {
         let context = LAContext()
         var error: NSError?
+        // canEvaluatePolicy docs:
+        // https://developer.apple.com/documentation/localauthentication/lacontext/canevaluatepolicy(_:error:)
         let available = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
 
         let biometryType: String
         if #available(iOS 11.0, *) {
+            // biometryType docs:
+            // https://developer.apple.com/documentation/localauthentication/lacontext/biometrytype
             switch context.biometryType {
             case .faceID:
                 biometryType = "faceId"
@@ -71,6 +78,8 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         ])
     }
 
+    /// Checks whether a credential exists for the provided explicit selector.
+    /// Selector may be by `credentialId`, `userId`, or both when they are consistent.
     @objc func checkRegistration(_ call: CAPPluginCall) {
         let userId = normalize(call.getString("userId"))
         let credentialId = normalize(call.getString("credentialId"))
@@ -105,6 +114,8 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         ])
     }
 
+    /// Registers a new biometric credential and generates a secure key pair.
+    /// Enforces duplicate protections and optionally requires hardware-backed key storage.
     @objc func registerCredential(_ call: CAPPluginCall) {
         guard let userId = normalize(call.getString("userId")),
               let credentialId = normalize(call.getString("credentialId")) else {
@@ -162,6 +173,10 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
 
+            // SecKeyCopyPublicKey docs:
+            // https://developer.apple.com/documentation/security/1394661-seckeycopypublickey
+            // SecKeyCopyExternalRepresentation docs:
+            // https://developer.apple.com/documentation/security/1643698-seckeycopyexternalrepresentation
             guard let publicKey = SecKeyCopyPublicKey(keyResult.key),
                   let publicData = SecKeyCopyExternalRepresentation(publicKey, nil) as Data? else {
                 call.reject("Failed to extract public key.", "keyGenerationFailed")
@@ -194,6 +209,8 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    /// Authenticates the user and signs a canonical payload with the stored private key.
+    /// Rejects when selector resolution fails, key is invalidated, or signing cannot complete.
     @objc func authenticate(_ call: CAPPluginCall) {
         let userId = normalize(call.getString("userId"))
         let credentialId = normalize(call.getString("credentialId"))
@@ -249,6 +266,8 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
             }
 
             var signError: Unmanaged<CFError>?
+            // SecKeyCreateSignature docs:
+            // https://developer.apple.com/documentation/security/1643698-seckeycreatesignature
             guard let signature = SecKeyCreateSignature(privateKey, .ecdsaSignatureMessageX962SHA256, payloadData as CFData, &signError) as Data? else {
                 call.reject("Failed to sign authentication payload.", "signatureFailed")
                 return
@@ -271,6 +290,8 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    /// Removes a credential from secure key storage and local metadata storage.
+    /// Returns `removed: false` when no matching record exists.
     @objc func removeCredential(_ call: CAPPluginCall) {
         let userId = normalize(call.getString("userId"))
         let credentialId = normalize(call.getString("credentialId"))
@@ -293,6 +314,8 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         call.resolve(["removed": true])
     }
 
+    /// Resolves exactly one credential record from explicit selectors.
+    /// Returns a structured result that can represent ambiguity or selector mismatch.
     private func resolveRecord(userId: String?, credentialId: String?) -> ResolveResult {
         let hasUser = userId?.isEmpty == false
         let hasCredential = credentialId?.isEmpty == false
@@ -328,6 +351,8 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         return ResolveResult(record: nil, errorCode: "configurationError", reason: "Invalid selector.")
     }
 
+    /// Builds a deterministic JSON payload string for backend signature verification.
+    /// Field order is intentionally fixed to keep canonical serialization stable.
     private func buildCanonicalPayload(type: String, challenge: String, credentialId: String, userId: String?) -> String {
         var dict: [(String, Any)] = [
             ("v", 1),
@@ -355,6 +380,8 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         return "{\(parts.joined(separator: ","))}"
     }
 
+    /// Prompts biometric authentication through `LAContext` and marshals completion on main queue.
+    /// evaluatePolicy docs: https://developer.apple.com/documentation/localauthentication/lacontext/evaluatepolicy(_:localizedreason:reply:)
     private func authenticateBiometric(reason: String, completion: @escaping (Bool, NSError?) -> Void) {
         let context = LAContext()
         context.localizedFallbackTitle = ""
@@ -365,6 +392,11 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    /// Creates a private EC key in Secure Enclave when possible, with policy-bound access control.
+    /// Falls back to non-Secure-Enclave key generation only when hardware-backed is not required.
+    /// Security framework docs:
+    /// - SecAccessControlCreateWithFlags: https://developer.apple.com/documentation/security/1396916-secaccesscontrolcreatewithflags
+    /// - SecKeyCreateRandomKey: https://developer.apple.com/documentation/security/1643691-seckeycreaterandomkey
     private func createPrivateKey(tag: String, invalidateOnEnrollmentChange: Bool, requireHardwareBacked: Bool) -> KeyCreationResult? {
         let tagData = Data(tag.utf8)
         let accessFlags: SecAccessControlCreateFlags = invalidateOnEnrollmentChange
@@ -409,6 +441,9 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         return KeyCreationResult(key: fallbackKey, securityLevel: "hardware")
     }
 
+    /// Loads a previously created private key reference by application tag.
+    /// Returns nil when key is missing or inaccessible.
+    /// SecItemCopyMatching docs: https://developer.apple.com/documentation/security/1398306-secitemcopymatching
     private func loadPrivateKey(tag: String) -> SecKey? {
         let tagData = Data(tag.utf8)
         let query: [String: Any] = [
@@ -427,6 +462,9 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         return (item as! SecKey)
     }
 
+    /// Deletes a private key by tag from the Keychain key class.
+    /// Treats "item not found" as success to keep deletion idempotent.
+    /// SecItemDelete docs: https://developer.apple.com/documentation/security/1395547-secitemdelete
     private func deletePrivateKey(tag: String) -> Bool {
         let tagData = Data(tag.utf8)
         let query: [String: Any] = [
@@ -439,6 +477,8 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         return status == errSecSuccess || status == errSecItemNotFound
     }
 
+    /// Loads persisted credential records from `UserDefaults` JSON blob storage.
+    /// Returns an empty list when data is missing or decoding fails.
     private func loadRecords() -> [Record] {
         guard let data = UserDefaults.standard.data(forKey: storageKey) else {
             return []
@@ -451,6 +491,8 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    /// Persists credential records to `UserDefaults` using JSON encoding.
+    /// Persistence failures are intentionally swallowed in this implementation.
     private func saveRecords(_ records: [Record]) {
         do {
             let data = try JSONEncoder().encode(records)
@@ -460,6 +502,7 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    /// Marks an existing credential as invalidated in local metadata storage.
     private func markInvalidated(credentialId: String) {
         var records = loadRecords()
         guard let index = records.firstIndex(where: { $0.credentialId == credentialId }) else {
@@ -470,21 +513,25 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         saveRecords(records)
     }
 
+    /// Derives a deterministic key tag used to locate secure keys in Keychain.
     private func keyTag(for credentialId: String) -> String {
         return "biometric_credential_\(credentialId)"
     }
 
+    /// Trims whitespace/newlines and normalizes empty strings to nil.
     private func normalize(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    /// Validates that a string is non-empty Base64URL-compatible input.
     private func validateBase64Url(_ value: String) -> Bool {
         let pattern = "^[A-Za-z0-9_-]+$"
         return value.range(of: pattern, options: .regularExpression) != nil
     }
 
+    /// Encodes data to Base64URL without padding.
     private func toBase64Url(_ data: Data) -> String {
         return data.base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
@@ -492,6 +539,7 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
             .replacingOccurrences(of: "=", with: "")
     }
 
+    /// Escapes control characters for safe inline JSON string construction.
     private func escapeJson(_ value: String) -> String {
         var escaped = value
         escaped = escaped.replacingOccurrences(of: "\\", with: "\\\\")
@@ -502,6 +550,7 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         return escaped
     }
 
+    /// Maps `LAError` values to normalized plugin-level error codes.
     private func mapLAErrorCode(_ error: NSError?) -> String {
         guard let error else { return "unknown" }
         guard error.domain == LAError.errorDomain else { return "unknown" }
@@ -526,6 +575,7 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    /// Returns user-facing reason text for LocalAuthentication failures.
     private func reasonForLAError(_ error: NSError?) -> String {
         guard let error else {
             return "Biometric authentication is unavailable."
@@ -533,6 +583,7 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         return error.localizedDescription
     }
 
+    /// Performs lightweight jailbreak/tamper heuristics for risk signaling.
     private func isCompromisedDevice() -> Bool {
         let suspiciousPaths = [
             "/Applications/Cydia.app",

@@ -67,6 +67,7 @@ public class BiometricCredentialPlugin extends Plugin {
     private static class OperationException extends Exception {
         final String code;
 
+        /** Carries a typed plugin error code through async biometric callbacks. */
         OperationException(String code, String message) {
             super(message);
             this.code = code;
@@ -74,6 +75,7 @@ public class BiometricCredentialPlugin extends Plugin {
     }
 
     private interface AuthSuccessHandler {
+        /** Handles a successful biometric callback and may throw operation errors. */
         void onSuccess(@NonNull BiometricPrompt.AuthenticationResult result) throws Exception;
     }
 
@@ -91,6 +93,7 @@ public class BiometricCredentialPlugin extends Plugin {
         String securityLevel;
         boolean invalidated;
 
+        /** Serializes a local credential record to JSON for SharedPreferences persistence. */
         JSONObject toJson() throws JSONException {
             JSONObject json = new JSONObject();
             json.put("credentialId", credentialId);
@@ -102,6 +105,7 @@ public class BiometricCredentialPlugin extends Plugin {
             return json;
         }
 
+        /** Deserializes a local credential record from JSON with safe defaults. */
         static Record fromJson(JSONObject json) {
             Record out = new Record();
             out.credentialId = json.optString("credentialId");
@@ -115,14 +119,20 @@ public class BiometricCredentialPlugin extends Plugin {
     }
 
     @Override
+    /** Plugin lifecycle hook. Reserved for future initialization logic. */
     public void load() {
         super.load();
     }
 
     @PluginMethod
+    /** Reports biometric capability and security posture for the current Android device. */
     public void checkBiometry(PluginCall call) {
         Context context = getContext();
+        // AndroidX BiometricManager docs:
+        // https://developer.android.com/reference/androidx/biometric/BiometricManager
         BiometricManager manager = BiometricManager.from(context);
+        // canAuthenticate docs:
+        // https://developer.android.com/reference/androidx/biometric/BiometricManager#canAuthenticate(int)
         int strongResult = manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG);
         int weakResult = manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK);
 
@@ -153,6 +163,7 @@ public class BiometricCredentialPlugin extends Plugin {
     }
 
     @PluginMethod
+    /** Checks whether a credential exists for the explicit selector (userId/credentialId). */
     public void checkRegistration(PluginCall call) {
         String userId = trim(call.getString("userId"));
         String credentialId = trim(call.getString("credentialId"));
@@ -190,6 +201,7 @@ public class BiometricCredentialPlugin extends Plugin {
     }
 
     @PluginMethod
+    /** Registers a new credential after strong biometric verification and key generation. */
     public void registerCredential(PluginCall call) {
         String userId = trim(call.getString("userId"));
         String credentialId = trim(call.getString("credentialId"));
@@ -242,6 +254,8 @@ public class BiometricCredentialPlugin extends Plugin {
                 throw new OperationException(CODE_KEY_GENERATION_FAILED, "Failed to generate key pair.");
             }
 
+            // PublicKey#getEncoded docs:
+            // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/Key.html#getEncoded()
             PublicKey publicKey = keyPair.getPublic();
 
             String securityLevel = resolveSecurityLevel(alias, requireHardwareBacked);
@@ -275,6 +289,7 @@ public class BiometricCredentialPlugin extends Plugin {
     }
 
     @PluginMethod
+    /** Authenticates the user and signs a canonical payload with a biometric-protected private key. */
     public void authenticate(PluginCall call) {
         String userId = trim(call.getString("userId"));
         String credentialId = trim(call.getString("credentialId"));
@@ -315,6 +330,8 @@ public class BiometricCredentialPlugin extends Plugin {
 
         try {
             PrivateKey privateKey = loadPrivateKey(resolved.record.keyAlias);
+            // Signature docs:
+            // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/Signature.html
             Signature signature = Signature.getInstance("SHA256withECDSA");
             signature.initSign(privateKey);
 
@@ -329,6 +346,9 @@ public class BiometricCredentialPlugin extends Plugin {
                 byte[] payloadBytes = canonical.getBytes(StandardCharsets.UTF_8);
                 String signedPayload = toBase64Url(payloadBytes);
 
+                // Signature#update + Signature#sign docs:
+                // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/Signature.html#update(byte%5B%5D)
+                // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/Signature.html#sign()
                 Signature signer = resultCrypto.getSignature();
                 signer.update(payloadBytes);
                 byte[] signatureBytes = signer.sign();
@@ -359,6 +379,7 @@ public class BiometricCredentialPlugin extends Plugin {
     }
 
     @PluginMethod
+    /** Deletes a credential from Android Keystore and local storage if it exists. */
     public void removeCredential(PluginCall call) {
         String userId = trim(call.getString("userId"));
         String credentialId = trim(call.getString("credentialId"));
@@ -388,6 +409,10 @@ public class BiometricCredentialPlugin extends Plugin {
         }
     }
 
+    /**
+     * Displays the AndroidX biometric prompt and forwards success to the provided handler.
+     * BiometricPrompt docs: https://developer.android.com/reference/androidx/biometric/BiometricPrompt
+     */
     private void performBiometricPrompt(
         PluginCall call,
         String title,
@@ -414,6 +439,8 @@ public class BiometricCredentialPlugin extends Plugin {
                 return;
             }
 
+            // ContextCompat#getMainExecutor docs:
+            // https://developer.android.com/reference/androidx/core/content/ContextCompat#getMainExecutor(android.content.Context)
             Executor executor = ContextCompat.getMainExecutor(activity);
             BiometricPrompt prompt = new BiometricPrompt(activity, executor, new BiometricPrompt.AuthenticationCallback() {
                 @Override
@@ -445,33 +472,52 @@ public class BiometricCredentialPlugin extends Plugin {
             }
 
             BiometricPrompt.PromptInfo info = builder.build();
+            // authenticate overload docs:
+            // https://developer.android.com/reference/androidx/biometric/BiometricPrompt#authenticate(androidx.biometric.BiometricPrompt.PromptInfo,androidx.biometric.BiometricPrompt.CryptoObject)
             if (cryptoObject != null) {
                 prompt.authenticate(info, cryptoObject);
             } else {
+                // https://developer.android.com/reference/androidx/biometric/BiometricPrompt#authenticate(androidx.biometric.BiometricPrompt.PromptInfo)
                 prompt.authenticate(info);
             }
         });
     }
 
+    /** Returns true when strong biometrics are enrolled and available on the device. */
     private boolean meetsStrongBiometryRequirements() {
         BiometricManager manager = BiometricManager.from(getContext());
         return manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS;
     }
 
+    /**
+     * Creates an EC P-256 key pair in Android Keystore with biometric user authentication.
+     * KeyGenParameterSpec docs: https://developer.android.com/reference/android/security/keystore/KeyGenParameterSpec
+     */
     private KeyPair generateKeyPair(String alias, boolean invalidateOnChange, boolean requireHardwareBacked) throws Exception {
+        // KeyPairGenerator#getInstance docs:
+        // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/KeyPairGenerator.html#getInstance(java.lang.String,java.lang.String)
+        // Use the AndroidKeyStore provider so the OS, not app storage, owns the private key material.
         KeyPairGenerator generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, KEYSTORE);
+        // Build the key policy up front: alias identifies the record in Android Keystore,
+        // and the purpose flags declare that this key may sign and verify data.
         KeyGenParameterSpec.Builder builder = new KeyGenParameterSpec.Builder(
             alias,
             KeyProperties.PURPOSE_SIGN | KeyProperties.PURPOSE_VERIFY
         )
+            // secp256r1 is the standard P-256 elliptic curve used by ES256 signatures.
             .setAlgorithmParameterSpec(new ECGenParameterSpec("secp256r1"))
+            // Restrict the key to SHA-256 based signing operations.
             .setDigests(KeyProperties.DIGEST_SHA256)
+            // Require user authentication before Android Keystore allows private-key use.
             .setUserAuthenticationRequired(true)
+            // Optionally invalidate the key if enrolled biometrics change after registration.
             .setInvalidatedByBiometricEnrollment(invalidateOnChange);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // On Android 11+, require strong biometric auth for every key usage.
             builder.setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG);
         } else {
+            // On older versions, -1 means authentication is required for each use.
             builder.setUserAuthenticationValidityDurationSeconds(-1);
         }
 
@@ -479,11 +525,18 @@ public class BiometricCredentialPlugin extends Plugin {
         // not specifically StrongBox. Forcing StrongBox here breaks on many devices
         // that still provide secure hardware-backed keystore without StrongBox.
 
+        // Finalize the spec and hand the policy to the Android Keystore-backed generator.
         generator.initialize(builder.build());
+        // generateKeyPair docs:
+        // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/KeyPairGenerator.html#generateKeyPair()
+        // This is the point where the OS creates the key pair and stores it in Android Keystore.
         return generator.generateKeyPair();
     }
 
+    /** Loads a private key entry from Android Keystore for the given alias. */
     private PrivateKey loadPrivateKey(String alias) throws Exception {
+        // KeyStore docs:
+        // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/KeyStore.html
         KeyStore keyStore = KeyStore.getInstance(KEYSTORE);
         keyStore.load(null);
 
@@ -495,6 +548,7 @@ public class BiometricCredentialPlugin extends Plugin {
         return ((KeyStore.PrivateKeyEntry) entry).getPrivateKey();
     }
 
+    /** Determines whether a key is StrongBox, hardware-backed, software-backed, or unknown. */
     private String resolveSecurityLevel(String alias, boolean requireHardwareBacked) {
         try {
             KeyStore keyStore = KeyStore.getInstance(KEYSTORE);
@@ -524,6 +578,7 @@ public class BiometricCredentialPlugin extends Plugin {
         }
     }
 
+    /** Deletes an entry from Android Keystore when the alias exists. */
     private void deleteKey(String alias) throws Exception {
         KeyStore keyStore = KeyStore.getInstance(KEYSTORE);
         keyStore.load(null);
@@ -532,6 +587,7 @@ public class BiometricCredentialPlugin extends Plugin {
         }
     }
 
+    /** Resolves a single credential by explicit selector and detects ambiguous selection. */
     private ResolveResult resolveRecord(String userId, String credentialId) {
         ResolveResult out = new ResolveResult();
         boolean hasUser = !isEmpty(userId);
@@ -568,6 +624,7 @@ public class BiometricCredentialPlugin extends Plugin {
             JSONArray records = loadRecords();
             Record match = null;
             int count = 0;
+            // Scan all records to guarantee userId-only selection is unambiguous.
             for (int i = 0; i < records.length(); i += 1) {
                 JSONObject item = records.getJSONObject(i);
                 Record record = Record.fromJson(item);
@@ -592,6 +649,7 @@ public class BiometricCredentialPlugin extends Plugin {
         }
     }
 
+    /** Finds a credential record by credentialId, or null when absent. */
     private Record findByCredentialId(String credentialId) throws JSONException {
         JSONArray records = loadRecords();
         for (int i = 0; i < records.length(); i += 1) {
@@ -605,6 +663,7 @@ public class BiometricCredentialPlugin extends Plugin {
         return null;
     }
 
+    /** Counts credentials tied to a userId in local storage. */
     private int countByUserId(String userId) throws JSONException {
         JSONArray records = loadRecords();
         int count = 0;
@@ -619,6 +678,7 @@ public class BiometricCredentialPlugin extends Plugin {
         return count;
     }
 
+    /** Inserts or replaces a credential record in the persisted JSON array. */
     private void upsertRecord(Record target) throws JSONException {
         JSONArray records = loadRecords();
         JSONArray out = new JSONArray();
@@ -642,6 +702,7 @@ public class BiometricCredentialPlugin extends Plugin {
         persistRecords(out);
     }
 
+    /** Removes a credential record by credentialId from local storage. */
     private void removeRecord(String credentialId) throws JSONException {
         JSONArray records = loadRecords();
         JSONArray out = new JSONArray();
@@ -657,6 +718,7 @@ public class BiometricCredentialPlugin extends Plugin {
         persistRecords(out);
     }
 
+    /** Marks a credential as invalidated in local storage after key failures. */
     private void markInvalidated(String credentialId) {
         try {
             Record record = findByCredentialId(credentialId);
@@ -670,22 +732,30 @@ public class BiometricCredentialPlugin extends Plugin {
         }
     }
 
+    /** Loads persisted credential records from SharedPreferences. */
     private JSONArray loadRecords() throws JSONException {
+        // SharedPreferences docs:
+        // https://developer.android.com/reference/android/content/SharedPreferences
         SharedPreferences prefs = getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String raw = prefs.getString(PREFS_KEY, "[]");
         return new JSONArray(raw == null ? "[]" : raw);
     }
 
+    /** Persists credential records atomically to SharedPreferences. */
     private void persistRecords(JSONArray records) {
         SharedPreferences prefs = getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        // Editor#apply docs:
+        // https://developer.android.com/reference/android/content/SharedPreferences.Editor#apply()
         prefs.edit().putString(PREFS_KEY, records.toString()).apply();
     }
 
+    /** Returns a prompt title from call options or falls back to a default title. */
     private String buildPromptTitle(PluginCall call, String fallback) {
         String title = trim(call.getString("androidTitle"));
         return isEmpty(title) ? fallback : title;
     }
 
+    /** Validates challenge format as a non-empty base64url string. */
     private String validateChallenge(String challenge) {
         if (isEmpty(challenge)) {
             return CODE_CHALLENGE_MISSING;
@@ -698,6 +768,7 @@ public class BiometricCredentialPlugin extends Plugin {
         return null;
     }
 
+    /** Builds the canonical JSON payload string used for signature verification on backend. */
     private String buildCanonicalPayload(String type, String challenge, String credentialId, String userId) {
         StringBuilder builder = new StringBuilder();
         builder.append("{");
@@ -713,6 +784,7 @@ public class BiometricCredentialPlugin extends Plugin {
         return builder.toString();
     }
 
+    /** Maps BiometricManager capability errors to plugin error codes. */
     private String mapBiometricErrorToCode(int result) {
         switch (result) {
             case BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED:
@@ -729,6 +801,7 @@ public class BiometricCredentialPlugin extends Plugin {
         }
     }
 
+    /** Converts BiometricManager results into user-readable explanation text. */
     private String reasonForBiometricResult(int result) {
         switch (result) {
             case BiometricManager.BIOMETRIC_SUCCESS:
@@ -748,6 +821,7 @@ public class BiometricCredentialPlugin extends Plugin {
         }
     }
 
+    /** Maps BiometricPrompt runtime errors to plugin error codes. */
     private String mapPromptErrorToCode(int errorCode) {
         switch (errorCode) {
             case BiometricPrompt.ERROR_USER_CANCELED:
@@ -768,28 +842,38 @@ public class BiometricCredentialPlugin extends Plugin {
         }
     }
 
+    /** Rejects a Capacitor call with a normalized code/message pair. */
     private void reject(PluginCall call, String code, String message) {
         call.reject(message, code);
     }
 
+    /** Derives a deterministic Android Keystore alias from credentialId. */
     private String keyAliasFor(String credentialId) {
         return "biometric_credential_" + credentialId;
     }
 
+    /** Trims a string safely and preserves null input. */
     private String trim(String value) {
         return value == null ? null : value.trim();
     }
 
+    /** Returns true when a string is null or whitespace-only. */
     private boolean isEmpty(String value) {
         return value == null || value.trim().isEmpty();
     }
 
+    /** Encodes bytes as Base64URL without padding for wire-safe payloads. */
     private String toBase64Url(byte[] bytes) {
+        // Android Base64 docs:
+        // https://developer.android.com/reference/android/util/Base64#encodeToString(byte%5B%5D,int)
         return Base64.encodeToString(bytes, Base64.NO_WRAP | Base64.NO_PADDING | Base64.URL_SAFE);
     }
 
+    /** Detects StrongBox support on API levels where this property exists. */
     private boolean isStrongBoxBacked(KeyInfo info) {
         try {
+            // Reflection Method docs:
+            // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/lang/reflect/Method.html#invoke(java.lang.Object,java.lang.Object...)
             Method method = KeyInfo.class.getMethod("isStrongBoxBacked");
             Object value = method.invoke(info);
             return value instanceof Boolean && (Boolean) value;
@@ -798,6 +882,7 @@ public class BiometricCredentialPlugin extends Plugin {
         }
     }
 
+    /** Attempts key deletion and intentionally ignores cleanup failures. */
     private void deleteKeyQuietly(String alias) {
         try {
             deleteKey(alias);
@@ -805,6 +890,7 @@ public class BiometricCredentialPlugin extends Plugin {
         }
     }
 
+    /** Performs lightweight root/tamper heuristics for an optional risk signal. */
     private boolean isCompromisedDevice() {
         boolean testKeys = Build.TAGS != null && Build.TAGS.contains("test-keys");
         boolean suBinary = new File("/system/xbin/su").exists()
