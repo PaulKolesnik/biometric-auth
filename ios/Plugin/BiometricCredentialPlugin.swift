@@ -149,7 +149,7 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         let detectCompromised = call.getBool("detectCompromisedDevice", false)
         let compromisedSignal = detectCompromised ? isCompromisedDevice() : false
 
-        authenticateBiometric(reason: reason) { [weak self] success, error in
+        authenticateBiometric(reason: reason) { [weak self] success, error, _ in
             guard let self = self else { return }
 
             guard success else {
@@ -245,7 +245,7 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         let detectCompromised = call.getBool("detectCompromisedDevice", false)
         let compromisedSignal = detectCompromised ? isCompromisedDevice() : false
 
-        authenticateBiometric(reason: reason) { [weak self] success, error in
+        authenticateBiometric(reason: reason) { [weak self] success, error, authContext in
             guard let self = self else { return }
 
             guard success else {
@@ -259,7 +259,7 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
 
-            guard let privateKey = self.loadPrivateKey(tag: record.keyTag) else {
+            guard let privateKey = self.loadPrivateKey(tag: record.keyTag, context: authContext) else {
                 self.markInvalidated(credentialId: record.credentialId)
                 call.reject("Credential key is unavailable or invalidated.", "credentialInvalidated")
                 return
@@ -382,12 +382,12 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
 
     /// Prompts biometric authentication through `LAContext` and marshals completion on main queue.
     /// evaluatePolicy docs: https://developer.apple.com/documentation/localauthentication/lacontext/evaluatepolicy(_:localizedreason:reply:)
-    private func authenticateBiometric(reason: String, completion: @escaping (Bool, NSError?) -> Void) {
+    private func authenticateBiometric(reason: String, completion: @escaping (Bool, NSError?, LAContext?) -> Void) {
         let context = LAContext()
         context.localizedFallbackTitle = ""
         context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { success, error in
             DispatchQueue.main.async {
-                completion(success, error as NSError?)
+                completion(success, error as NSError?, success ? context : nil)
             }
         }
     }
@@ -444,14 +444,17 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
     /// Loads a previously created private key reference by application tag.
     /// Returns nil when key is missing or inaccessible.
     /// SecItemCopyMatching docs: https://developer.apple.com/documentation/security/1398306-secitemcopymatching
-    private func loadPrivateKey(tag: String) -> SecKey? {
+    private func loadPrivateKey(tag: String, context: LAContext? = nil) -> SecKey? {
         let tagData = Data(tag.utf8)
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassKey,
             kSecAttrApplicationTag as String: tagData,
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecReturnRef as String: true,
         ]
+        if let context = context {
+            query[kSecUseAuthenticationContext as String] = context
+        }
 
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
