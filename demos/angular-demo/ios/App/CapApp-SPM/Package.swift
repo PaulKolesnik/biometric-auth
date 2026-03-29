@@ -12,7 +12,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.2.0"),
-        .package(name: "CapacitorSecureBiometricCredentialPlugin", path: "..\..\..\..\..")
+        .package(name: "CapacitorSecureBiometricCredentialPlugin", path: "../../../../..")
     ],
     targets: [
         .target(
