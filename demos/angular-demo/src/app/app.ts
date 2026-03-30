@@ -89,6 +89,44 @@ export class App {
     });
   }
 
+  async verifyRegistration(): Promise<void> {
+    await this.runAction(async () => {
+      if (!this.registerResult) {
+        throw new Error('No registration result to verify. Register a credential first.');
+      }
+
+      const { publicKey, signature, signedPayload } = this.registerResult;
+
+      const publicKeyObj = await crypto.subtle.importKey(
+        'jwk',
+        JSON.parse(publicKey),
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        false,
+        ['verify'],
+      );
+
+      const signatureBytes = this.fromBase64Url(signature);
+      const payloadBytes = this.fromBase64Url(signedPayload);
+
+      const isValid = await crypto.subtle.verify(
+        { name: 'ECDSA', hash: 'SHA-256' },
+        publicKeyObj,
+        signatureBytes.buffer as ArrayBuffer,
+        payloadBytes.buffer as ArrayBuffer,
+      );
+
+      const payloadJson = JSON.parse(new TextDecoder().decode(payloadBytes));
+      const challengeMatches = payloadJson.challenge === this.challenge;
+
+      this.lastResult = this.pretty({
+        signatureValid: isValid,
+        challengeMatches,
+        payloadType: payloadJson.type,
+        payload: payloadJson,
+      });
+    });
+  }
+
   async removeCredential(): Promise<void> {
     await this.runAction(async () => {
       this.removeResult = await BiometricCredential.removeCredential({
@@ -163,6 +201,17 @@ export class App {
     } finally {
       this.loading = false;
     }
+  }
+
+  private fromBase64Url(input: string): Uint8Array {
+    const base64 = input.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
   }
 
   private generateBase64UrlChallenge(): string {

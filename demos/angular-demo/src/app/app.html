@@ -61,6 +61,7 @@
     <button (click)="checkRegistration()" [disabled]="loading">checkRegistration</button>
     <button (click)="registerCredential()" [disabled]="loading">registerCredential</button>
     <button (click)="authenticate()" [disabled]="loading">authenticate</button>
+    <button (click)="verifyRegistration()" [disabled]="loading || !registerResult">verifyRegistration</button>
     <button (click)="removeCredential()" [disabled]="loading">removeCredential</button>
   </section>
 

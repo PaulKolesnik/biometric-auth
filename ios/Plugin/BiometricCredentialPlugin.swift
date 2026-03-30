@@ -183,6 +183,18 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
 
+            let payload = self.buildCanonicalPayload(type: "registration", challenge: challenge, credentialId: credentialId, userId: userId)
+            guard let payloadData = payload.data(using: .utf8) else {
+                call.reject("Failed to encode payload.", "signatureFailed")
+                return
+            }
+
+            var signError: Unmanaged<CFError>?
+            guard let signature = SecKeyCreateSignature(keyResult.key, .ecdsaSignatureMessageX962SHA256, payloadData as CFData, &signError) as Data? else {
+                call.reject("Failed to sign registration payload.", "signatureFailed")
+                return
+            }
+
             var updated = records
             updated.append(Record(
                 credentialId: credentialId,
@@ -200,6 +212,8 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
                 "publicKey": self.toBase64Url(publicData),
                 "algorithm": self.algorithm,
                 "securityLevel": keyResult.securityLevel,
+                "signature": self.toBase64Url(signature),
+                "signedPayload": self.toBase64Url(payloadData),
             ]
             if detectCompromised {
                 result["compromisedDeviceSignal"] = compromisedSignal

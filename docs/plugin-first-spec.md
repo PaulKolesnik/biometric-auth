@@ -106,7 +106,7 @@ No re-serialization variance is allowed across platforms.
 2. Requires biometric verification.
 3. Fails if security policy cannot be satisfied.
 4. Generates key pair and stores private key in protected native storage (or software-only simulation on web).
-5. Returns public fields only.
+5. Signs canonical payload (type: "registration") with the newly generated private key and returns signature + signedPayload alongside public key. This enables server-side proof-of-possession verification that the returned public key corresponds to a genuine private key held by the client.
 6. Fails with credentialAlreadyExists when uniqueness scope conflicts.
 7. If requireHardwareBackedKey is true, registration must fail with securityLevelInsufficient when the platform cannot produce hardware-backed key material.
 

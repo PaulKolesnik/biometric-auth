@@ -116,7 +116,7 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
     })
 
     const signedPayload = encodeSignedPayload(payload)
-    await this.signPayload(keyPair.privateKey, signedPayload)
+    const signature = await this.signPayload(keyPair.privateKey, signedPayload)
 
     const record: StoredCredentialRecord = {
       credentialId: options.credentialId,
@@ -136,6 +136,8 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
       publicKey: JSON.stringify(record.publicKeyJwk),
       algorithm: record.algorithm,
       securityLevel: record.securityLevel,
+      signature,
+      signedPayload,
       compromisedDeviceSignal: options.detectCompromisedDevice ? false : undefined,
     }
   }

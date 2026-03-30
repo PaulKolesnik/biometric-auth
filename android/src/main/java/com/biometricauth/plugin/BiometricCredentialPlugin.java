@@ -245,24 +245,52 @@ public class BiometricCredentialPlugin extends Plugin {
         boolean detectCompromised = call.getBoolean("detectCompromisedDevice", false);
         boolean compromisedSignal = detectCompromised && isCompromisedDevice();
 
-        performBiometricPrompt(call, buildPromptTitle(call, "Register credential"), call.getString("androidSubtitle"), null, result -> {
-            String alias = keyAliasFor(credentialId);
-            KeyPair keyPair;
-            try {
-                keyPair = generateKeyPair(alias, invalidateOnChange, requireHardwareBacked);
-            } catch (Exception error) {
-                throw new OperationException(CODE_KEY_GENERATION_FAILED, "Failed to generate key pair.");
-            }
+        String alias = keyAliasFor(credentialId);
+        KeyPair keyPair;
+        try {
+            keyPair = generateKeyPair(alias, invalidateOnChange, requireHardwareBacked);
+        } catch (Exception error) {
+            reject(call, CODE_KEY_GENERATION_FAILED, "Failed to generate key pair.");
+            return;
+        }
 
-            // PublicKey#getEncoded docs:
-            // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/Key.html#getEncoded()
-            PublicKey publicKey = keyPair.getPublic();
+        // PublicKey#getEncoded docs:
+        // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/Key.html#getEncoded()
+        PublicKey publicKey = keyPair.getPublic();
 
-            String securityLevel = resolveSecurityLevel(alias, requireHardwareBacked);
-            if (requireHardwareBacked && !("hardware".equals(securityLevel) || "strongBox".equals(securityLevel))) {
+        String securityLevel = resolveSecurityLevel(alias, requireHardwareBacked);
+        if (requireHardwareBacked && !("hardware".equals(securityLevel) || "strongBox".equals(securityLevel))) {
+            deleteKeyQuietly(alias);
+            reject(call, CODE_SECURITY_LEVEL_INSUFFICIENT, "Hardware-backed key is required by policy.");
+            return;
+        }
+
+        Signature signatureObj;
+        try {
+            signatureObj = Signature.getInstance("SHA256withECDSA");
+            signatureObj.initSign(keyPair.getPrivate());
+        } catch (Exception error) {
+            deleteKeyQuietly(alias);
+            reject(call, CODE_SIGNATURE_FAILED, "Failed to initialize signature for registration.");
+            return;
+        }
+
+        BiometricPrompt.CryptoObject cryptoObject = new BiometricPrompt.CryptoObject(signatureObj);
+
+        performBiometricPrompt(call, buildPromptTitle(call, "Register credential"), call.getString("androidSubtitle"), cryptoObject, result -> {
+            BiometricPrompt.CryptoObject resultCrypto = result.getCryptoObject();
+            if (resultCrypto == null || resultCrypto.getSignature() == null) {
                 deleteKeyQuietly(alias);
-                throw new OperationException(CODE_SECURITY_LEVEL_INSUFFICIENT, "Hardware-backed key is required by policy.");
+                throw new OperationException(CODE_SIGNATURE_FAILED, "Biometric crypto object is unavailable.");
             }
+
+            String canonical = buildCanonicalPayload("registration", challenge, credentialId, userId);
+            byte[] payloadBytes = canonical.getBytes(StandardCharsets.UTF_8);
+            String signedPayload = toBase64Url(payloadBytes);
+
+            Signature signer = resultCrypto.getSignature();
+            signer.update(payloadBytes);
+            byte[] signatureBytes = signer.sign();
 
             Record record = new Record();
             record.credentialId = credentialId;
@@ -280,6 +308,8 @@ public class BiometricCredentialPlugin extends Plugin {
             out.put("publicKey", toBase64Url(publicKey.getEncoded()));
             out.put("algorithm", ALGORITHM);
             out.put("securityLevel", securityLevel);
+            out.put("signature", toBase64Url(signatureBytes));
+            out.put("signedPayload", signedPayload);
             if (detectCompromised) {
                 out.put("compromisedDeviceSignal", compromisedSignal);
             }

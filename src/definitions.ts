@@ -99,6 +99,8 @@ export interface RegisterCredentialResult {
   publicKey: string
   algorithm: string
   securityLevel: CredentialSecurityLevel
+  signature: string
+  signedPayload: string
   compromisedDeviceSignal?: boolean
 }
 
