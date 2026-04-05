@@ -97,9 +97,11 @@ export interface RegisterCredentialResult {
   credentialId: string
   userId: string
   publicKey: string
+  publicKeyFormat: 'spki'
   algorithm: string
   securityLevel: CredentialSecurityLevel
   signature: string
+  signatureFormat: 'der'
   signedPayload: string
   compromisedDeviceSignal?: boolean
 }
@@ -120,6 +122,7 @@ export interface AuthenticateResult {
   credentialId: string
   userId?: string
   signature: string
+  signatureFormat: 'der'
   signedPayload: string
   algorithm: string
   securityLevel: CredentialSecurityLevel

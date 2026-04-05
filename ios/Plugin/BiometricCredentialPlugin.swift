@@ -179,18 +179,21 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
             // https://developer.apple.com/documentation/security/1643698-seckeycopyexternalrepresentation
             guard let publicKey = SecKeyCopyPublicKey(keyResult.key),
                   let publicData = SecKeyCopyExternalRepresentation(publicKey, nil) as Data? else {
+                _ = self.deletePrivateKey(tag: tag)
                 call.reject("Failed to extract public key.", "keyGenerationFailed")
                 return
             }
 
             let payload = self.buildCanonicalPayload(type: "registration", challenge: challenge, credentialId: credentialId, userId: userId)
             guard let payloadData = payload.data(using: .utf8) else {
+                _ = self.deletePrivateKey(tag: tag)
                 call.reject("Failed to encode payload.", "signatureFailed")
                 return
             }
 
             var signError: Unmanaged<CFError>?
             guard let signature = SecKeyCreateSignature(keyResult.key, .ecdsaSignatureMessageX962SHA256, payloadData as CFData, &signError) as Data? else {
+                _ = self.deletePrivateKey(tag: tag)
                 call.reject("Failed to sign registration payload.", "signatureFailed")
                 return
             }
@@ -209,10 +212,12 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
             var result: [String: Any] = [
                 "credentialId": credentialId,
                 "userId": userId,
-                "publicKey": self.toBase64Url(publicData),
+                "publicKey": self.toBase64Url(self.rawPublicKeyToSPKI(publicData)),
+                "publicKeyFormat": "spki",
                 "algorithm": self.algorithm,
                 "securityLevel": keyResult.securityLevel,
                 "signature": self.toBase64Url(signature),
+                "signatureFormat": "der",
                 "signedPayload": self.toBase64Url(payloadData),
             ]
             if detectCompromised {
@@ -291,6 +296,7 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
                 "credentialId": record.credentialId,
                 "userId": record.userId,
                 "signature": self.toBase64Url(signature),
+                "signatureFormat": "der",
                 "signedPayload": self.toBase64Url(payloadData),
                 "algorithm": record.algorithm,
                 "securityLevel": record.securityLevel,
@@ -554,6 +560,23 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
+    }
+
+    /// Wraps a raw X9.62 uncompressed EC P-256 public key (65 bytes) in SubjectPublicKeyInfo (SPKI) DER encoding.
+    /// The SPKI header for P-256 is a fixed 26-byte prefix: SEQUENCE { SEQUENCE { OID ecPublicKey, OID prime256v1 }, BIT STRING }.
+    private func rawPublicKeyToSPKI(_ rawKey: Data) -> Data {
+        let spkiHeader: [UInt8] = [
+            0x30, 0x59,             // SEQUENCE (89 bytes)
+            0x30, 0x13,             // SEQUENCE (19 bytes)
+            0x06, 0x07,             // OID (7 bytes) - ecPublicKey
+            0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01,
+            0x06, 0x08,             // OID (8 bytes) - prime256v1
+            0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07,
+            0x03, 0x42, 0x00        // BIT STRING (66 bytes, 0 unused bits)
+        ]
+        var spki = Data(spkiHeader)
+        spki.append(rawKey)
+        return spki
     }
 
     /// Escapes control characters for safe inline JSON string construction.

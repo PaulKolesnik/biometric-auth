@@ -15,7 +15,7 @@ import {
   RemoveCredentialResult,
 } from './definitions'
 import { fail } from './errors'
-import { assertBase64UrlNonEmpty, fromBase64Url, toBase64Url } from './internal/encoding'
+import { assertBase64UrlNonEmpty, fromBase64Url, ieeeP1363ToDer, toBase64Url } from './internal/encoding'
 import { buildCanonicalPayload, encodeSignedPayload } from './internal/payload'
 import { StoredCredentialRecord, WebCredentialStore } from './internal/web-store'
 
@@ -107,6 +107,7 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
     const keyPair = await this.generateKeyPair()
     const exportedPublic = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
     const exportedPrivate = await crypto.subtle.exportKey('jwk', keyPair.privateKey)
+    const spkiBuffer = await crypto.subtle.exportKey('spki', keyPair.publicKey)
 
     const payload = buildCanonicalPayload({
       type: 'registration',
@@ -133,10 +134,12 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
     return {
       credentialId: record.credentialId,
       userId: record.userId,
-      publicKey: JSON.stringify(record.publicKeyJwk),
+      publicKey: toBase64Url(new Uint8Array(spkiBuffer)),
+      publicKeyFormat: 'spki' as const,
       algorithm: record.algorithm,
       securityLevel: record.securityLevel,
       signature,
+      signatureFormat: 'der' as const,
       signedPayload,
       compromisedDeviceSignal: options.detectCompromisedDevice ? false : undefined,
     }
@@ -191,6 +194,7 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
       credentialId: resolved.credentialId,
       userId: resolved.userId,
       signature,
+      signatureFormat: 'der' as const,
       signedPayload,
       algorithm: resolved.algorithm,
       securityLevel: resolved.securityLevel,
@@ -366,7 +370,7 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
     try {
       const payloadBytes = fromBase64Url(signedPayload)
       const payloadBuffer = Uint8Array.from(payloadBytes).buffer
-      const signature = await crypto.subtle.sign(
+      const rawSignature = await crypto.subtle.sign(
         {
           name: 'ECDSA',
           hash: 'SHA-256',
@@ -375,7 +379,9 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
         payloadBuffer,
       )
 
-      return toBase64Url(new Uint8Array(signature))
+      // WebCrypto outputs IEEE P1363 (r‖s). Convert to DER to match iOS/Android.
+      const derSignature = ieeeP1363ToDer(new Uint8Array(rawSignature))
+      return toBase64Url(derSignature)
     } catch {
       fail({
         code: PluginErrorCode.signatureFailed,

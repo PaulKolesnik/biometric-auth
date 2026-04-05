@@ -97,21 +97,25 @@ export class App {
 
       const { publicKey, signature, signedPayload } = this.registerResult;
 
+      // publicKey is now SPKI (base64url) — import directly
+      const publicKeyBytes = this.fromBase64Url(publicKey);
       const publicKeyObj = await crypto.subtle.importKey(
-        'jwk',
-        JSON.parse(publicKey),
+        'spki',
+        publicKeyBytes.buffer as ArrayBuffer,
         { name: 'ECDSA', namedCurve: 'P-256' },
         false,
         ['verify'],
       );
 
-      const signatureBytes = this.fromBase64Url(signature);
+      // signature is DER — WebCrypto verify() expects IEEE P1363, so convert
+      const derBytes = this.fromBase64Url(signature);
+      const p1363Bytes = this.derToP1363(derBytes, 32);
       const payloadBytes = this.fromBase64Url(signedPayload);
 
       const isValid = await crypto.subtle.verify(
         { name: 'ECDSA', hash: 'SHA-256' },
         publicKeyObj,
-        signatureBytes.buffer as ArrayBuffer,
+        p1363Bytes.buffer as ArrayBuffer,
         payloadBytes.buffer as ArrayBuffer,
       );
 
@@ -212,6 +216,26 @@ export class App {
       bytes[i] = binary.charCodeAt(i);
     }
     return bytes;
+  }
+
+  /** Converts a DER-encoded ECDSA signature to IEEE P1363 (r‖s) for WebCrypto verify(). */
+  private derToP1363(der: Uint8Array, componentLength: number): Uint8Array {
+    // DER: 0x30 <seqLen> 0x02 <rLen> <r> 0x02 <sLen> <s>
+    let offset = 2; // skip SEQUENCE tag + length
+    const rLen = der[offset + 1];
+    const rData = der.subarray(offset + 2, offset + 2 + rLen);
+    offset += 2 + rLen;
+    const sLen = der[offset + 1];
+    const sData = der.subarray(offset + 2, offset + 2 + sLen);
+
+    const result = new Uint8Array(componentLength * 2);
+    // Copy r, right-aligned (strip leading zero padding)
+    const rTrimmed = rData.length > componentLength ? rData.subarray(rData.length - componentLength) : rData;
+    result.set(rTrimmed, componentLength - rTrimmed.length);
+    // Copy s, right-aligned
+    const sTrimmed = sData.length > componentLength ? sData.subarray(sData.length - componentLength) : sData;
+    result.set(sTrimmed, componentLength * 2 - sTrimmed.length);
+    return result;
   }
 
   private generateBase64UrlChallenge(): string {

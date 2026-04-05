@@ -288,9 +288,15 @@ public class BiometricCredentialPlugin extends Plugin {
             byte[] payloadBytes = canonical.getBytes(StandardCharsets.UTF_8);
             String signedPayload = toBase64Url(payloadBytes);
 
-            Signature signer = resultCrypto.getSignature();
-            signer.update(payloadBytes);
-            byte[] signatureBytes = signer.sign();
+            byte[] signatureBytes;
+            try {
+                Signature signer = resultCrypto.getSignature();
+                signer.update(payloadBytes);
+                signatureBytes = signer.sign();
+            } catch (Exception signEx) {
+                deleteKeyQuietly(alias);
+                throw new OperationException(CODE_SIGNATURE_FAILED, "Failed to sign registration payload.");
+            }
 
             Record record = new Record();
             record.credentialId = credentialId;
@@ -306,9 +312,11 @@ public class BiometricCredentialPlugin extends Plugin {
             out.put("credentialId", credentialId);
             out.put("userId", userId);
             out.put("publicKey", toBase64Url(publicKey.getEncoded()));
+            out.put("publicKeyFormat", "spki");
             out.put("algorithm", ALGORITHM);
             out.put("securityLevel", securityLevel);
             out.put("signature", toBase64Url(signatureBytes));
+            out.put("signatureFormat", "der");
             out.put("signedPayload", signedPayload);
             if (detectCompromised) {
                 out.put("compromisedDeviceSignal", compromisedSignal);
@@ -387,6 +395,7 @@ public class BiometricCredentialPlugin extends Plugin {
                 out.put("credentialId", resolved.record.credentialId);
                 out.put("userId", resolved.record.userId);
                 out.put("signature", toBase64Url(signatureBytes));
+                out.put("signatureFormat", "der");
                 out.put("signedPayload", signedPayload);
                 out.put("algorithm", resolved.record.algorithm);
                 out.put("securityLevel", resolved.record.securityLevel);
