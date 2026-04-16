@@ -149,7 +149,7 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         let detectCompromised = call.getBool("detectCompromisedDevice", false)
         let compromisedSignal = detectCompromised ? isCompromisedDevice() : false
 
-        authenticateBiometric(reason: reason) { [weak self] success, error, _ in
+        authenticateBiometric(reason: reason) { [weak self] success, error, authContext in
             guard let self = self else { return }
 
             guard success else {
@@ -191,8 +191,16 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
 
+            // Load the key with the already-authenticated LAContext so the Security framework
+            // reuses the existing biometric session instead of prompting a second time.
+            guard let signingKey = self.loadPrivateKey(tag: tag, context: authContext) else {
+                _ = self.deletePrivateKey(tag: tag)
+                call.reject("Failed to load key for signing.", "keyGenerationFailed")
+                return
+            }
+
             var signError: Unmanaged<CFError>?
-            guard let signature = SecKeyCreateSignature(keyResult.key, .ecdsaSignatureMessageX962SHA256, payloadData as CFData, &signError) as Data? else {
+            guard let signature = SecKeyCreateSignature(signingKey, .ecdsaSignatureMessageX962SHA256, payloadData as CFData, &signError) as Data? else {
                 _ = self.deletePrivateKey(tag: tag)
                 call.reject("Failed to sign registration payload.", "signatureFailed")
                 return
