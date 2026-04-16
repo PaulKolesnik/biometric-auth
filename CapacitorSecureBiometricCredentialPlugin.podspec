@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name = 'CapacitorSecureBiometricCredentialPlugin'
-  s.version = '0.1.0'
+  s.version = '0.1.1' 
   s.summary = 'Capacitor secure biometric credential plugin'
   s.license = 'MIT'
   s.homepage = 'https://example.com'
