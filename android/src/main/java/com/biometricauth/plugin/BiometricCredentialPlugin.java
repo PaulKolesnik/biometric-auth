@@ -3,6 +3,7 @@ package com.biometricauth.plugin;
 import android.app.KeyguardManager;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyInfo;
@@ -143,17 +144,40 @@ public class BiometricCredentialPlugin extends Plugin {
         KeyguardManager keyguard = (KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
         boolean secure = keyguard != null && keyguard.isDeviceSecure();
 
+        // PackageManager feature flags let us detect which biometric hardware the device has.
+        // FEATURE_FACE and FEATURE_IRIS were added in API 29 (Android 10).
+        PackageManager pm = context.getPackageManager();
+        boolean hasFingerprint = pm.hasSystemFeature(PackageManager.FEATURE_FINGERPRINT);
+        boolean hasFace = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+            && pm.hasSystemFeature(PackageManager.FEATURE_FACE);
+        boolean hasIris = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+            && pm.hasSystemFeature(PackageManager.FEATURE_IRIS);
+
         JSONArray types = new JSONArray();
-        if (available) {
-            types.put("fingerprint");
-        } else {
+        if (!available) {
             types.put("none");
+        } else {
+            if (hasFingerprint) types.put("fingerprint");
+            if (hasFace) types.put("face");
+            if (hasIris) types.put("iris");
+            // Fallback: biometrics are available but hardware type is indeterminate.
+            if (types.length() == 0) types.put("fingerprint");
+        }
+
+        // biometryType is the single primary type: face takes precedence over fingerprint.
+        String primaryType;
+        if (!available) {
+            primaryType = "none";
+        } else if (hasFace) {
+            primaryType = "face";
+        } else {
+            primaryType = "fingerprint";
         }
 
         JSObject result = new JSObject();
         result.put("isAvailable", available);
         result.put("strongBiometryIsAvailable", strongAvailable);
-        result.put("biometryType", available ? "fingerprint" : "none");
+        result.put("biometryType", primaryType);
         result.put("biometryTypes", types);
         result.put("deviceIsSecure", secure);
         result.put("meetsSecurityRequirements", strongAvailable && secure);
