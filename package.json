@@ -1,6 +1,6 @@
 {
   "name": "capacitor-secure-biometric-credential-plugin",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Capacitor plugin for biometric-gated cryptographic credentials",
   "main": "dist/index.js",
   "module": "dist/index.js",
