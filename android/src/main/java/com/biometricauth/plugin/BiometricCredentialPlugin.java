@@ -135,43 +135,43 @@ public class BiometricCredentialPlugin extends Plugin {
         // canAuthenticate docs:
         // https://developer.android.com/reference/androidx/biometric/BiometricManager#canAuthenticate(int)
         int strongResult = manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG);
-        int weakResult = manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK);
-
         boolean strongAvailable = strongResult == BiometricManager.BIOMETRIC_SUCCESS;
-        boolean weakAvailable = weakResult == BiometricManager.BIOMETRIC_SUCCESS;
-        boolean available = strongAvailable || weakAvailable;
 
         KeyguardManager keyguard = (KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
         boolean secure = keyguard != null && keyguard.isDeviceSecure();
 
-        // PackageManager feature flags let us detect which biometric hardware the device has.
-        // FEATURE_FACE and FEATURE_IRIS were added in API 29 (Android 10).
+        // PackageManager feature flag reports whether fingerprint hardware is present.
+        // Android Keystore CryptoObject flows require Class 3 (BIOMETRIC_STRONG); on the
+        // vast majority of Android devices fingerprint is the only Class 3 modality, so
+        // this plugin intentionally restricts eligibility to fingerprint.
         PackageManager pm = context.getPackageManager();
         boolean hasFingerprint = pm.hasSystemFeature(PackageManager.FEATURE_FINGERPRINT);
-        boolean hasFace = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-            && pm.hasSystemFeature(PackageManager.FEATURE_FACE);
-        boolean hasIris = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-            && pm.hasSystemFeature(PackageManager.FEATURE_IRIS);
+
+        // `available` requires BOTH fingerprint hardware AND a successful strong-biometric
+        // enrollment check, so we never advertise availability when only face/iris (Class 2)
+        // is enrolled even though BiometricManager might otherwise report WEAK as usable.
+        boolean available = hasFingerprint && strongAvailable;
 
         JSONArray types = new JSONArray();
-        if (!available) {
-            types.put("none");
+        if (available) {
+            types.put("fingerprint");
         } else {
-            if (hasFingerprint) types.put("fingerprint");
-            if (hasFace) types.put("face");
-            if (hasIris) types.put("iris");
-            // Fallback: biometrics are available but hardware type is indeterminate.
-            if (types.length() == 0) types.put("fingerprint");
+            types.put("none");
         }
 
-        // biometryType is the single primary type: face takes precedence over fingerprint.
-        String primaryType;
-        if (!available) {
-            primaryType = "none";
-        } else if (hasFace) {
-            primaryType = "face";
+        String primaryType = available ? "fingerprint" : "none";
+
+        String reason;
+        String code;
+        if (available) {
+            reason = "Fingerprint is available.";
+            code = "";
+        } else if (!hasFingerprint) {
+            reason = "Fingerprint hardware is not available on this device.";
+            code = CODE_NOT_AVAILABLE;
         } else {
-            primaryType = "fingerprint";
+            reason = reasonForBiometricResult(strongResult);
+            code = mapBiometricErrorToCode(strongResult);
         }
 
         JSObject result = new JSObject();
@@ -180,9 +180,9 @@ public class BiometricCredentialPlugin extends Plugin {
         result.put("biometryType", primaryType);
         result.put("biometryTypes", types);
         result.put("deviceIsSecure", secure);
-        result.put("meetsSecurityRequirements", strongAvailable && secure);
-        result.put("reason", reasonForBiometricResult(strongResult));
-        result.put("code", strongAvailable ? "" : mapBiometricErrorToCode(strongResult));
+        result.put("meetsSecurityRequirements", available && secure);
+        result.put("reason", reason);
+        result.put("code", code);
         call.resolve(result);
     }
 
@@ -546,8 +546,17 @@ public class BiometricCredentialPlugin extends Plugin {
         });
     }
 
-    /** Returns true when strong biometrics are enrolled and available on the device. */
+    /**
+     * Returns true only when fingerprint hardware is present AND a Class 3 (STRONG)
+     * biometric is enrolled. Restricting to fingerprint ensures the Keystore-backed
+     * CryptoObject flow cannot be satisfied by face/iris unlock, which on most Android
+     * devices is classified as Class 2 (WEAK) and therefore cannot release Keystore keys.
+     */
     private boolean meetsStrongBiometryRequirements() {
+        PackageManager pm = getContext().getPackageManager();
+        if (!pm.hasSystemFeature(PackageManager.FEATURE_FINGERPRINT)) {
+            return false;
+        }
         BiometricManager manager = BiometricManager.from(getContext());
         return manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS;
     }
