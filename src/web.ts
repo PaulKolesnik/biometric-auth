@@ -76,15 +76,6 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
     this.ensureRequired(options.userId, 'userId')
     this.ensureRequired(options.credentialId, 'credentialId')
 
-    if (options.requireStrongBiometry) {
-      fail({
-        code: PluginErrorCode.securityLevelInsufficient,
-        message: 'Web simulation cannot satisfy strong biometric requirements.',
-        platform: 'web',
-        isUserActionable: true,
-      })
-    }
-
     if (this.store.hasCredentialId(options.credentialId)) {
       fail({
         code: PluginErrorCode.credentialAlreadyExists,
@@ -114,6 +105,8 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
       challenge: options.challenge,
       credentialId: options.credentialId,
       userId: options.userId,
+      securityLevel: CredentialSecurityLevel.software,
+      deviceIntegrity: true,
     })
 
     const signedPayload = encodeSignedPayload(payload)
@@ -141,7 +134,7 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
       signature,
       signatureFormat: 'der' as const,
       signedPayload,
-      compromisedDeviceSignal: options.detectCompromisedDevice ? false : undefined,
+      deviceIntegrity: true,
     }
   }
 
@@ -155,15 +148,6 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
       fail({
         code: PluginErrorCode.credentialInvalidated,
         message: 'Credential is invalidated and cannot be used.',
-        platform: 'web',
-        isUserActionable: true,
-      })
-    }
-
-    if (options.requireStrongBiometry) {
-      fail({
-        code: PluginErrorCode.securityLevelInsufficient,
-        message: 'Web simulation cannot satisfy strong biometric requirements.',
         platform: 'web',
         isUserActionable: true,
       })
@@ -185,6 +169,8 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
       challenge: options.challenge,
       credentialId: resolved.credentialId,
       userId: resolved.userId,
+      securityLevel: resolved.securityLevel,
+      deviceIntegrity: true,
     })
 
     const signedPayload = encodeSignedPayload(payload)
@@ -199,7 +185,7 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
       algorithm: resolved.algorithm,
       securityLevel: resolved.securityLevel,
       usedBiometry: true,
-      compromisedDeviceSignal: options.detectCompromisedDevice ? false : undefined,
+      deviceIntegrity: true,
     }
   }
 

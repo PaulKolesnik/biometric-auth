@@ -22,10 +22,6 @@ export class App {
   challenge = this.generateBase64UrlChallenge();
 
   selectorMode: 'both' | 'credentialId' | 'userId' | 'none' = 'both';
-  requireStrongBiometry = true;
-  requireHardwareBackedKey = true;
-  detectCompromisedDevice = false;
-
   loading = false;
   lastError = '';
   lastResult = '';
@@ -59,11 +55,6 @@ export class App {
         userId: this.userId,
         credentialId: this.credentialId,
         challenge: this.challenge,
-        requireStrongBiometry: this.requireStrongBiometry,
-        requireBiometricVerification: true,
-        requireHardwareBackedKey: this.requireHardwareBackedKey,
-        invalidateOnBiometricEnrollmentChange: true,
-        detectCompromisedDevice: this.detectCompromisedDevice,
         iosPromptReason: 'Register biometric credential',
         androidTitle: 'Register credential',
         androidSubtitle: 'Use biometrics to register',
@@ -78,9 +69,6 @@ export class App {
       this.authenticateResult = await BiometricCredential.authenticate({
         ...selector,
         challenge: this.challenge,
-        requireStrongBiometry: this.requireStrongBiometry,
-        requireBiometricVerification: true,
-        detectCompromisedDevice: this.detectCompromisedDevice,
         iosPromptReason: 'Authenticate with biometrics',
         androidTitle: 'Authenticate',
         androidSubtitle: 'Use biometrics to sign challenge',
@@ -150,9 +138,6 @@ export class App {
     this.credentialId = 'cred-demo-001';
     this.challenge = this.generateBase64UrlChallenge();
     this.selectorMode = 'both';
-    this.requireStrongBiometry = true;
-    this.requireHardwareBackedKey = true;
-    this.detectCompromisedDevice = false;
   }
 
   applyScenarioInvalidChallenge(): void {
@@ -169,9 +154,6 @@ export class App {
   applyScenarioCompatibilityMode(): void {
     this.scenarioName = 'Compatibility Mode';
     this.selectorMode = 'both';
-    this.requireStrongBiometry = false;
-    this.requireHardwareBackedKey = false;
-    this.detectCompromisedDevice = true;
     this.challenge = this.generateBase64UrlChallenge();
   }
 

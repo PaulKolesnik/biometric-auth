@@ -145,9 +145,7 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         let reason = normalize(call.getString("iosPromptReason")) ?? "Verify your identity"
-        let requireHardwareBacked = call.getBool("requireHardwareBackedKey", false)
-        let detectCompromised = call.getBool("detectCompromisedDevice", false)
-        let compromisedSignal = detectCompromised ? isCompromisedDevice() : false
+        let deviceIntegrity = !isCompromisedDevice()
 
         authenticateBiometric(reason: reason) { [weak self] success, error, authContext in
             guard let self = self else { return }
@@ -158,25 +156,19 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
             }
 
             let tag = self.keyTag(for: credentialId)
-            guard let keyResult = self.createPrivateKey(
-                tag: tag,
-                invalidateOnEnrollmentChange: call.getBool("invalidateOnBiometricEnrollmentChange", true),
-                requireHardwareBacked: requireHardwareBacked
-            ) else {
+            // Always require Secure Enclave (hardware) and always invalidate on
+            // enrollment change — both hardcoded to prevent Frida from flipping them.
+            guard let keyResult = self.createPrivateKey(tag: tag) else {
                 call.reject("Failed to generate secure key.", "keyGenerationFailed")
                 return
             }
 
-            if requireHardwareBacked && keyResult.securityLevel != "secureEnclave" {
+            if keyResult.securityLevel != "secureEnclave" {
                 _ = self.deletePrivateKey(tag: tag)
-                call.reject("Hardware-backed key is required by policy.", "securityLevelInsufficient")
+                call.reject("Hardware-backed key is required.", "securityLevelInsufficient")
                 return
             }
 
-            // SecKeyCopyPublicKey docs:
-            // https://developer.apple.com/documentation/security/1394661-seckeycopypublickey
-            // SecKeyCopyExternalRepresentation docs:
-            // https://developer.apple.com/documentation/security/1643698-seckeycopyexternalrepresentation
             guard let publicKey = SecKeyCopyPublicKey(keyResult.key),
                   let publicData = SecKeyCopyExternalRepresentation(publicKey, nil) as Data? else {
                 _ = self.deletePrivateKey(tag: tag)
@@ -184,15 +176,13 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
 
-            let payload = self.buildCanonicalPayload(type: "registration", challenge: challenge, credentialId: credentialId, userId: userId)
+            let payload = self.buildCanonicalPayload(type: "registration", challenge: challenge, credentialId: credentialId, userId: userId, securityLevel: keyResult.securityLevel, deviceIntegrity: deviceIntegrity)
             guard let payloadData = payload.data(using: .utf8) else {
                 _ = self.deletePrivateKey(tag: tag)
                 call.reject("Failed to encode payload.", "signatureFailed")
                 return
             }
 
-            // Load the key with the already-authenticated LAContext so the Security framework
-            // reuses the existing biometric session instead of prompting a second time.
             guard let signingKey = self.loadPrivateKey(tag: tag, context: authContext) else {
                 _ = self.deletePrivateKey(tag: tag)
                 call.reject("Failed to load key for signing.", "keyGenerationFailed")
@@ -217,7 +207,7 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
             ))
             self.saveRecords(updated)
 
-            var result: [String: Any] = [
+            let result: [String: Any] = [
                 "credentialId": credentialId,
                 "userId": userId,
                 "publicKey": self.toBase64Url(self.rawPublicKeyToSPKI(publicData)),
@@ -227,10 +217,8 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
                 "signature": self.toBase64Url(signature),
                 "signatureFormat": "der",
                 "signedPayload": self.toBase64Url(payloadData),
+                "deviceIntegrity": deviceIntegrity,
             ]
-            if detectCompromised {
-                result["compromisedDeviceSignal"] = compromisedSignal
-            }
 
             call.resolve(result)
         }
@@ -269,8 +257,7 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         let reason = normalize(call.getString("iosPromptReason")) ?? "Verify your identity"
-        let detectCompromised = call.getBool("detectCompromisedDevice", false)
-        let compromisedSignal = detectCompromised ? isCompromisedDevice() : false
+        let deviceIntegrity = !isCompromisedDevice()
 
         authenticateBiometric(reason: reason) { [weak self] success, error, authContext in
             guard let self = self else { return }
@@ -280,7 +267,7 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
 
-            let payload = self.buildCanonicalPayload(type: "authentication", challenge: challenge, credentialId: record.credentialId, userId: record.userId)
+            let payload = self.buildCanonicalPayload(type: "authentication", challenge: challenge, credentialId: record.credentialId, userId: record.userId, securityLevel: record.securityLevel, deviceIntegrity: deviceIntegrity)
             guard let payloadData = payload.data(using: .utf8) else {
                 call.reject("Failed to encode payload.", "signatureFailed")
                 return
@@ -293,14 +280,12 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
             }
 
             var signError: Unmanaged<CFError>?
-            // SecKeyCreateSignature docs:
-            // https://developer.apple.com/documentation/security/1643698-seckeycreatesignature
             guard let signature = SecKeyCreateSignature(privateKey, .ecdsaSignatureMessageX962SHA256, payloadData as CFData, &signError) as Data? else {
                 call.reject("Failed to sign authentication payload.", "signatureFailed")
                 return
             }
 
-            var result: [String: Any] = [
+            let result: [String: Any] = [
                 "credentialId": record.credentialId,
                 "userId": record.userId,
                 "signature": self.toBase64Url(signature),
@@ -309,10 +294,8 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
                 "algorithm": record.algorithm,
                 "securityLevel": record.securityLevel,
                 "usedBiometry": true,
+                "deviceIntegrity": deviceIntegrity,
             ]
-            if detectCompromised {
-                result["compromisedDeviceSignal"] = compromisedSignal
-            }
 
             call.resolve(result)
         }
@@ -380,10 +363,12 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     /// Builds a deterministic JSON payload string for backend signature verification.
-    /// Field order is intentionally fixed to keep canonical serialization stable.
-    private func buildCanonicalPayload(type: String, challenge: String, credentialId: String, userId: String?) -> String {
+    /// Security-critical metadata (securityLevel, deviceIntegrity) is embedded inside the
+    /// signed payload so the server can trust these claims even if client-side values
+    /// are tampered with via runtime instrumentation (e.g. Frida).
+    private func buildCanonicalPayload(type: String, challenge: String, credentialId: String, userId: String?, securityLevel: String, deviceIntegrity: Bool) -> String {
         var dict: [(String, Any)] = [
-            ("v", 1),
+            ("v", 2),
             ("type", type),
             ("challenge", challenge),
             ("credentialId", credentialId),
@@ -394,6 +379,8 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         dict.append(("algorithm", "ES256"))
+        dict.append(("securityLevel", securityLevel))
+        dict.append(("deviceIntegrity", deviceIntegrity))
 
         let parts = dict.map { key, value -> String in
             let valueString: String
@@ -420,27 +407,26 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    /// Creates a private EC key in Secure Enclave when possible, with policy-bound access control.
-    /// Falls back to non-Secure-Enclave key generation only when hardware-backed is not required.
+    /// Creates a private EC key in Secure Enclave with biometryCurrentSet access control.
+    /// Always uses Secure Enclave (hardware) and always invalidates on biometric enrollment
+    /// change — both hardcoded to prevent runtime parameter tampering.
     /// Security framework docs:
     /// - SecAccessControlCreateWithFlags: https://developer.apple.com/documentation/security/1396916-secaccesscontrolcreatewithflags
     /// - SecKeyCreateRandomKey: https://developer.apple.com/documentation/security/1643691-seckeycreaterandomkey
-    private func createPrivateKey(tag: String, invalidateOnEnrollmentChange: Bool, requireHardwareBacked: Bool) -> KeyCreationResult? {
+    private func createPrivateKey(tag: String) -> KeyCreationResult? {
         let tagData = Data(tag.utf8)
-        let accessFlags: SecAccessControlCreateFlags = invalidateOnEnrollmentChange
-            ? [.privateKeyUsage, .biometryCurrentSet]
-            : [.privateKeyUsage, .biometryAny]
 
+        // biometryCurrentSet means the key is invalidated whenever biometric enrollment changes.
         guard let access = SecAccessControlCreateWithFlags(
             nil,
             kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-            accessFlags,
+            [.privateKeyUsage, .biometryCurrentSet],
             nil
         ) else {
             return nil
         }
 
-        var attributes: [String: Any] = [
+        let attributes: [String: Any] = [
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecAttrKeySizeInBits as String: 256,
             kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
@@ -452,21 +438,11 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         ]
 
         var error: Unmanaged<CFError>?
-        if let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error) {
-            return KeyCreationResult(key: key, securityLevel: "secureEnclave")
-        }
-
-        if requireHardwareBacked {
+        guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
             return nil
         }
 
-        attributes.removeValue(forKey: kSecAttrTokenID as String)
-        error = nil
-        guard let fallbackKey = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
-            return nil
-        }
-
-        return KeyCreationResult(key: fallbackKey, securityLevel: "hardware")
+        return KeyCreationResult(key: key, securityLevel: "secureEnclave")
     }
 
     /// Loads a previously created private key reference by application tag.
