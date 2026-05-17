@@ -271,9 +271,6 @@ public class BiometricCredentialPlugin extends Plugin {
             return;
         }
 
-        boolean invalidateOnChange = call.getBoolean("invalidateOnBiometricEnrollmentChange", true);
-        boolean requireHardwareBacked = call.getBoolean("requireHardwareBackedKey", false);
-
         // Always evaluate device integrity and embed the result in the signed payload.
         // Running unconditionally prevents Frida from simply flipping a boolean gate.
         boolean deviceIntegrity = !isCompromisedDevice();
@@ -282,7 +279,7 @@ public class BiometricCredentialPlugin extends Plugin {
         byte[] challengeBytes = Base64.decode(challenge, Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
         KeyPair keyPair;
         try {
-            keyPair = generateKeyPair(alias, invalidateOnChange, requireHardwareBacked, challengeBytes);
+            keyPair = generateKeyPair(alias, challengeBytes);
         } catch (Exception error) {
             reject(call, CODE_KEY_GENERATION_FAILED, "Failed to generate key pair.");
             return;
@@ -292,10 +289,10 @@ public class BiometricCredentialPlugin extends Plugin {
         // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/Key.html#getEncoded()
         PublicKey publicKey = keyPair.getPublic();
 
-        String securityLevel = resolveSecurityLevel(alias, requireHardwareBacked);
-        if (requireHardwareBacked && !("hardware".equals(securityLevel) || "strongBox".equals(securityLevel))) {
+        String securityLevel = resolveSecurityLevel(alias);
+        if (!("hardware".equals(securityLevel) || "strongBox".equals(securityLevel))) {
             deleteKeyQuietly(alias);
-            reject(call, CODE_SECURITY_LEVEL_INSUFFICIENT, "Hardware-backed key is required by policy.");
+            reject(call, CODE_SECURITY_LEVEL_INSUFFICIENT, "Hardware-backed key is required.");
             return;
         }
 
@@ -394,8 +391,9 @@ public class BiometricCredentialPlugin extends Plugin {
             return;
         }
 
-        boolean requireStrong = call.getBoolean("requireStrongBiometry", true);
-        if (requireStrong && !meetsStrongBiometryRequirements()) {
+        // Strong biometric is always required — enforced both here and by the
+        // BiometricPrompt BIOMETRIC_STRONG authenticator flag.
+        if (!meetsStrongBiometryRequirements()) {
             reject(call, CODE_SECURITY_LEVEL_INSUFFICIENT, "Strong biometric is required on Android.");
             return;
         }
@@ -572,7 +570,7 @@ public class BiometricCredentialPlugin extends Plugin {
      * server-generated nonce so the server can verify hardware origin.
      * KeyGenParameterSpec docs: https://developer.android.com/reference/android/security/keystore/KeyGenParameterSpec
      */
-    private KeyPair generateKeyPair(String alias, boolean invalidateOnChange, boolean requireHardwareBacked, byte[] attestationChallenge) throws Exception {
+    private KeyPair generateKeyPair(String alias, byte[] attestationChallenge) throws Exception {
         KeyPairGenerator generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, KEYSTORE);
         KeyGenParameterSpec.Builder builder = new KeyGenParameterSpec.Builder(
             alias,
@@ -581,7 +579,9 @@ public class BiometricCredentialPlugin extends Plugin {
             .setAlgorithmParameterSpec(new ECGenParameterSpec("secp256r1"))
             .setDigests(KeyProperties.DIGEST_SHA256)
             .setUserAuthenticationRequired(true)
-            .setInvalidatedByBiometricEnrollment(invalidateOnChange)
+            // Always invalidate when biometric enrollment changes to prevent an attacker
+            // from adding their fingerprint and reusing an existing credential.
+            .setInvalidatedByBiometricEnrollment(true)
             // Bind a server-generated challenge into the attestation certificate so the
             // server can verify the key was created in TEE/StrongBox hardware.
             .setAttestationChallenge(attestationChallenge);
@@ -634,7 +634,7 @@ public class BiometricCredentialPlugin extends Plugin {
     }
 
     /** Determines whether a key is StrongBox, hardware-backed, software-backed, or unknown. */
-    private String resolveSecurityLevel(String alias, boolean requireHardwareBacked) {
+    private String resolveSecurityLevel(String alias) {
         try {
             KeyStore keyStore = KeyStore.getInstance(KEYSTORE);
             keyStore.load(null);
@@ -655,7 +655,7 @@ public class BiometricCredentialPlugin extends Plugin {
                 return "hardware";
             }
 
-            return requireHardwareBacked ? "unknown" : "software";
+            return "software";
         } catch (InvalidKeySpecException | ClassCastException ignored) {
             return "unknown";
         } catch (Exception ignored) {

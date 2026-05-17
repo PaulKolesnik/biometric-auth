@@ -83,10 +83,6 @@ export interface RegisterCredentialOptions {
   credentialId: string
   challenge: string
   displayName?: string
-  requireBiometricVerification?: boolean
-  requireStrongBiometry?: boolean
-  requireHardwareBackedKey?: boolean
-  invalidateOnBiometricEnrollmentChange?: boolean
   iosPromptReason?: string
   androidTitle?: string
   androidSubtitle?: string
@@ -128,8 +124,6 @@ export interface AuthenticateOptions {
   userId?: string
   credentialId?: string
   challenge: string
-  requireBiometricVerification?: boolean
-  requireStrongBiometry?: boolean
   iosPromptReason?: string
   androidTitle?: string
   androidSubtitle?: string

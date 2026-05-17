@@ -145,7 +145,6 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         let reason = normalize(call.getString("iosPromptReason")) ?? "Verify your identity"
-        let requireHardwareBacked = call.getBool("requireHardwareBackedKey", false)
         let deviceIntegrity = !isCompromisedDevice()
 
         authenticateBiometric(reason: reason) { [weak self] success, error, authContext in
@@ -157,18 +156,16 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
             }
 
             let tag = self.keyTag(for: credentialId)
-            guard let keyResult = self.createPrivateKey(
-                tag: tag,
-                invalidateOnEnrollmentChange: call.getBool("invalidateOnBiometricEnrollmentChange", true),
-                requireHardwareBacked: requireHardwareBacked
-            ) else {
+            // Always require Secure Enclave (hardware) and always invalidate on
+            // enrollment change — both hardcoded to prevent Frida from flipping them.
+            guard let keyResult = self.createPrivateKey(tag: tag) else {
                 call.reject("Failed to generate secure key.", "keyGenerationFailed")
                 return
             }
 
-            if requireHardwareBacked && keyResult.securityLevel != "secureEnclave" {
+            if keyResult.securityLevel != "secureEnclave" {
                 _ = self.deletePrivateKey(tag: tag)
-                call.reject("Hardware-backed key is required by policy.", "securityLevelInsufficient")
+                call.reject("Hardware-backed key is required.", "securityLevelInsufficient")
                 return
             }
 
@@ -410,27 +407,26 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    /// Creates a private EC key in Secure Enclave when possible, with policy-bound access control.
-    /// Falls back to non-Secure-Enclave key generation only when hardware-backed is not required.
+    /// Creates a private EC key in Secure Enclave with biometryCurrentSet access control.
+    /// Always uses Secure Enclave (hardware) and always invalidates on biometric enrollment
+    /// change — both hardcoded to prevent runtime parameter tampering.
     /// Security framework docs:
     /// - SecAccessControlCreateWithFlags: https://developer.apple.com/documentation/security/1396916-secaccesscontrolcreatewithflags
     /// - SecKeyCreateRandomKey: https://developer.apple.com/documentation/security/1643691-seckeycreaterandomkey
-    private func createPrivateKey(tag: String, invalidateOnEnrollmentChange: Bool, requireHardwareBacked: Bool) -> KeyCreationResult? {
+    private func createPrivateKey(tag: String) -> KeyCreationResult? {
         let tagData = Data(tag.utf8)
-        let accessFlags: SecAccessControlCreateFlags = invalidateOnEnrollmentChange
-            ? [.privateKeyUsage, .biometryCurrentSet]
-            : [.privateKeyUsage, .biometryAny]
 
+        // biometryCurrentSet means the key is invalidated whenever biometric enrollment changes.
         guard let access = SecAccessControlCreateWithFlags(
             nil,
             kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-            accessFlags,
+            [.privateKeyUsage, .biometryCurrentSet],
             nil
         ) else {
             return nil
         }
 
-        var attributes: [String: Any] = [
+        let attributes: [String: Any] = [
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecAttrKeySizeInBits as String: 256,
             kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
@@ -442,21 +438,11 @@ public class BiometricCredentialPlugin: CAPPlugin, CAPBridgedPlugin {
         ]
 
         var error: Unmanaged<CFError>?
-        if let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error) {
-            return KeyCreationResult(key: key, securityLevel: "secureEnclave")
-        }
-
-        if requireHardwareBacked {
+        guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
             return nil
         }
 
-        attributes.removeValue(forKey: kSecAttrTokenID as String)
-        error = nil
-        guard let fallbackKey = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
-            return nil
-        }
-
-        return KeyCreationResult(key: fallbackKey, securityLevel: "hardware")
+        return KeyCreationResult(key: key, securityLevel: "secureEnclave")
     }
 
     /// Loads a previously created private key reference by application tag.

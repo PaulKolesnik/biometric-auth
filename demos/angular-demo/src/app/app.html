@@ -38,16 +38,6 @@
       </select>
     </label>
 
-    <label class="checkbox">
-      <input type="checkbox" [(ngModel)]="requireStrongBiometry" />
-      <span>requireStrongBiometry</span>
-    </label>
-
-    <label class="checkbox">
-      <input type="checkbox" [(ngModel)]="requireHardwareBackedKey" />
-      <span>requireHardwareBackedKey</span>
-    </label>
-
     <button (click)="regenerateChallenge()" [disabled]="loading">Regenerate Challenge</button>
   </section>
 
