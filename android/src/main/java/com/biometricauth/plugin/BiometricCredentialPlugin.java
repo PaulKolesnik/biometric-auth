@@ -26,7 +26,11 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileReader;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.KeyPair;
@@ -37,9 +41,12 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Signature;
 import java.security.UnrecoverableEntryException;
+import java.security.cert.Certificate;
 import java.security.spec.ECGenParameterSpec;
 import java.security.spec.InvalidKeySpecException;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.regex.Pattern;
 
@@ -270,9 +277,10 @@ public class BiometricCredentialPlugin extends Plugin {
         boolean compromisedSignal = detectCompromised && isCompromisedDevice();
 
         String alias = keyAliasFor(credentialId);
+        byte[] challengeBytes = Base64.decode(challenge, Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
         KeyPair keyPair;
         try {
-            keyPair = generateKeyPair(alias, invalidateOnChange, requireHardwareBacked);
+            keyPair = generateKeyPair(alias, invalidateOnChange, requireHardwareBacked, challengeBytes);
         } catch (Exception error) {
             reject(call, CODE_KEY_GENERATION_FAILED, "Failed to generate key pair.");
             return;
@@ -332,6 +340,8 @@ public class BiometricCredentialPlugin extends Plugin {
 
             upsertRecord(record);
 
+            List<String> attestationChain = getAttestationCertificateChain(alias);
+
             JSObject out = new JSObject();
             out.put("credentialId", credentialId);
             out.put("userId", userId);
@@ -342,6 +352,9 @@ public class BiometricCredentialPlugin extends Plugin {
             out.put("signature", toBase64Url(signatureBytes));
             out.put("signatureFormat", "der");
             out.put("signedPayload", signedPayload);
+            if (!attestationChain.isEmpty()) {
+                out.put("attestationCertificateChain", new JSONArray(attestationChain));
+            }
             if (detectCompromised) {
                 out.put("compromisedDeviceSignal", compromisedSignal);
             }
@@ -562,47 +575,55 @@ public class BiometricCredentialPlugin extends Plugin {
     }
 
     /**
-     * Creates an EC P-256 key pair in Android Keystore with biometric user authentication.
+     * Creates an EC P-256 key pair in Android Keystore with biometric user authentication
+     * and Key Attestation. The attestation challenge binds the certificate chain to a
+     * server-generated nonce so the server can verify hardware origin.
      * KeyGenParameterSpec docs: https://developer.android.com/reference/android/security/keystore/KeyGenParameterSpec
      */
-    private KeyPair generateKeyPair(String alias, boolean invalidateOnChange, boolean requireHardwareBacked) throws Exception {
-        // KeyPairGenerator#getInstance docs:
-        // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/KeyPairGenerator.html#getInstance(java.lang.String,java.lang.String)
-        // Use the AndroidKeyStore provider so the OS, not app storage, owns the private key material.
+    private KeyPair generateKeyPair(String alias, boolean invalidateOnChange, boolean requireHardwareBacked, byte[] attestationChallenge) throws Exception {
         KeyPairGenerator generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, KEYSTORE);
-        // Build the key policy up front: alias identifies the record in Android Keystore,
-        // and the purpose flags declare that this key may sign and verify data.
         KeyGenParameterSpec.Builder builder = new KeyGenParameterSpec.Builder(
             alias,
             KeyProperties.PURPOSE_SIGN | KeyProperties.PURPOSE_VERIFY
         )
-            // secp256r1 is the standard P-256 elliptic curve used by ES256 signatures.
             .setAlgorithmParameterSpec(new ECGenParameterSpec("secp256r1"))
-            // Restrict the key to SHA-256 based signing operations.
             .setDigests(KeyProperties.DIGEST_SHA256)
-            // Require user authentication before Android Keystore allows private-key use.
             .setUserAuthenticationRequired(true)
-            // Optionally invalidate the key if enrolled biometrics change after registration.
-            .setInvalidatedByBiometricEnrollment(invalidateOnChange);
+            .setInvalidatedByBiometricEnrollment(invalidateOnChange)
+            // Bind a server-generated challenge into the attestation certificate so the
+            // server can verify the key was created in TEE/StrongBox hardware.
+            .setAttestationChallenge(attestationChallenge);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            // On Android 11+, require strong biometric auth for every key usage.
             builder.setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG);
         } else {
-            // On older versions, -1 means authentication is required for each use.
             builder.setUserAuthenticationValidityDurationSeconds(-1);
         }
 
-        // `requireHardwareBackedKey` means hardware-backed protection is required,
-        // not specifically StrongBox. Forcing StrongBox here breaks on many devices
-        // that still provide secure hardware-backed keystore without StrongBox.
-
-        // Finalize the spec and hand the policy to the Android Keystore-backed generator.
         generator.initialize(builder.build());
-        // generateKeyPair docs:
-        // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/KeyPairGenerator.html#generateKeyPair()
-        // This is the point where the OS creates the key pair and stores it in Android Keystore.
         return generator.generateKeyPair();
+    }
+
+    /**
+     * Extracts the Key Attestation certificate chain from Android Keystore.
+     * Each certificate is DER-encoded and returned as a base64 string.
+     * The server must validate this chain against Google's hardware attestation root CA
+     * and parse the attestation extension (OID 1.3.6.1.4.1.11129.2.1.17).
+     */
+    private List<String> getAttestationCertificateChain(String alias) {
+        List<String> chain = new ArrayList<>();
+        try {
+            KeyStore keyStore = KeyStore.getInstance(KEYSTORE);
+            keyStore.load(null);
+            Certificate[] certs = keyStore.getCertificateChain(alias);
+            if (certs != null) {
+                for (Certificate cert : certs) {
+                    chain.add(Base64.encodeToString(cert.getEncoded(), Base64.NO_WRAP));
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return chain;
     }
 
     /** Loads a private key entry from Android Keystore for the given alias. */
@@ -962,13 +983,195 @@ public class BiometricCredentialPlugin extends Plugin {
         }
     }
 
-    /** Performs lightweight root/tamper heuristics for an optional risk signal. */
+    /**
+     * Comprehensive device integrity check covering root, bootloader,
+     * runtime instrumentation (Frida), and known tampering frameworks.
+     */
     private boolean isCompromisedDevice() {
-        boolean testKeys = Build.TAGS != null && Build.TAGS.contains("test-keys");
-        boolean suBinary = new File("/system/xbin/su").exists()
-            || new File("/system/bin/su").exists()
-            || new File("/sbin/su").exists();
+        return hasRootIndicators()
+            || hasUnverifiedBootloader()
+            || hasFridaIndicators()
+            || hasTamperingFrameworks()
+            || hasDangerousBuildProperties();
+    }
 
-        return testKeys || suBinary;
+    /** Checks common su binary paths and root management artifacts. */
+    private boolean hasRootIndicators() {
+        String[] suPaths = {
+            "/system/xbin/su",
+            "/system/bin/su",
+            "/sbin/su",
+            "/data/local/bin/su",
+            "/data/local/xbin/su",
+            "/system/sd/xbin/su",
+            "/system/bin/failsafe/su",
+            "/vendor/bin/su",
+            "/system/app/Superuser.apk",
+            "/data/adb/magisk",
+            "/sbin/.magisk",
+            "/cache/.disable_magisk",
+            "/dev/magisk/mirror",
+        };
+
+        for (String path : suPaths) {
+            if (new File(path).exists()) {
+                return true;
+            }
+        }
+
+        if (Build.TAGS != null && Build.TAGS.contains("test-keys")) {
+            return true;
+        }
+
+        String[] rootPackages = {
+            "com.topjohnwu.magisk",
+            "eu.chainfire.supersu",
+            "com.koushikdutta.superuser",
+            "com.noshufou.android.su",
+            "com.thirdparty.superuser",
+            "com.yellowes.su",
+        };
+        return hasAnyPackageInstalled(rootPackages);
+    }
+
+    /**
+     * Reads ro.boot.verifiedbootstate system property to check if the
+     * bootloader is in VERIFIED (green) state. Any other state (yellow,
+     * orange, red) indicates an unlocked or tampered bootloader.
+     */
+    private boolean hasUnverifiedBootloader() {
+        String bootState = getSystemProperty("ro.boot.verifiedbootstate");
+        if (bootState != null && !bootState.isEmpty() && !"green".equalsIgnoreCase(bootState)) {
+            return true;
+        }
+
+        String verityMode = getSystemProperty("ro.boot.veritymode");
+        if (verityMode != null && "disabled".equalsIgnoreCase(verityMode)) {
+            return true;
+        }
+
+        String flashLocked = getSystemProperty("ro.boot.flash.locked");
+        if ("0".equals(flashLocked)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /** Detects Frida runtime instrumentation via port probing, library scanning, and file checks. */
+    private boolean hasFridaIndicators() {
+        if (isFridaPortOpen()) {
+            return true;
+        }
+
+        if (hasFridaLibrariesInMaps()) {
+            return true;
+        }
+
+        String[] fridaPaths = {
+            "/data/local/tmp/frida-server",
+            "/data/local/tmp/re.frida.server",
+            "/data/local/tmp/frida-agent",
+            "/data/local/tmp/frida-gadget",
+        };
+        for (String path : fridaPaths) {
+            if (new File(path).exists()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Attempts a TCP connection to the default Frida server port. */
+    private boolean isFridaPortOpen() {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress("127.0.0.1", 27042), 100);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    /** Scans /proc/self/maps for frida or gadget shared libraries loaded into the process. */
+    private boolean hasFridaLibrariesInMaps() {
+        try (BufferedReader reader = new BufferedReader(new FileReader("/proc/self/maps"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String lower = line.toLowerCase();
+                if (lower.contains("frida") || lower.contains("gadget")) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    /** Detects Xposed framework and similar hooking tools. */
+    private boolean hasTamperingFrameworks() {
+        String[] xposedPaths = {
+            "/system/framework/XposedBridge.jar",
+            "/system/bin/app_process.orig",
+            "/system/xposed.prop",
+        };
+        for (String path : xposedPaths) {
+            if (new File(path).exists()) {
+                return true;
+            }
+        }
+
+        String[] tamperPackages = {
+            "de.robv.android.xposed.installer",
+            "org.meowcat.edxposed.manager",
+            "org.lsposed.manager",
+            "com.saurik.substrate",
+        };
+        return hasAnyPackageInstalled(tamperPackages);
+    }
+
+    /** Checks build properties that indicate a debug or insecure system image. */
+    private boolean hasDangerousBuildProperties() {
+        if ("1".equals(getSystemProperty("ro.debuggable"))) {
+            return true;
+        }
+        if ("0".equals(getSystemProperty("ro.secure"))) {
+            return true;
+        }
+
+        String selinux = getSystemProperty("ro.build.selinux");
+        if ("0".equals(selinux) || "disabled".equalsIgnoreCase(selinux)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /** Reads an Android system property via reflection on SystemProperties. */
+    private String getSystemProperty(String name) {
+        try {
+            Class<?> clazz = Class.forName("android.os.SystemProperties");
+            Method getter = clazz.getMethod("get", String.class);
+            Object value = getter.invoke(null, name);
+            return value instanceof String ? (String) value : null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /** Checks whether any of the given package names are installed on the device. */
+    private boolean hasAnyPackageInstalled(String[] packageNames) {
+        try {
+            PackageManager pm = getContext().getPackageManager();
+            for (String pkg : packageNames) {
+                try {
+                    pm.getPackageInfo(pkg, 0);
+                    return true;
+                } catch (PackageManager.NameNotFoundException ignored) {
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
     }
 }
