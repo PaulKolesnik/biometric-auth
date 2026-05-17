@@ -24,8 +24,6 @@ export class App {
   selectorMode: 'both' | 'credentialId' | 'userId' | 'none' = 'both';
   requireStrongBiometry = true;
   requireHardwareBackedKey = true;
-  detectCompromisedDevice = false;
-
   loading = false;
   lastError = '';
   lastResult = '';
@@ -63,7 +61,6 @@ export class App {
         requireBiometricVerification: true,
         requireHardwareBackedKey: this.requireHardwareBackedKey,
         invalidateOnBiometricEnrollmentChange: true,
-        detectCompromisedDevice: this.detectCompromisedDevice,
         iosPromptReason: 'Register biometric credential',
         androidTitle: 'Register credential',
         androidSubtitle: 'Use biometrics to register',
@@ -80,7 +77,6 @@ export class App {
         challenge: this.challenge,
         requireStrongBiometry: this.requireStrongBiometry,
         requireBiometricVerification: true,
-        detectCompromisedDevice: this.detectCompromisedDevice,
         iosPromptReason: 'Authenticate with biometrics',
         androidTitle: 'Authenticate',
         androidSubtitle: 'Use biometrics to sign challenge',
@@ -152,7 +148,6 @@ export class App {
     this.selectorMode = 'both';
     this.requireStrongBiometry = true;
     this.requireHardwareBackedKey = true;
-    this.detectCompromisedDevice = false;
   }
 
   applyScenarioInvalidChallenge(): void {
@@ -171,7 +166,6 @@ export class App {
     this.selectorMode = 'both';
     this.requireStrongBiometry = false;
     this.requireHardwareBackedKey = false;
-    this.detectCompromisedDevice = true;
     this.challenge = this.generateBase64UrlChallenge();
   }
 

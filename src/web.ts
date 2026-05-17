@@ -114,6 +114,8 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
       challenge: options.challenge,
       credentialId: options.credentialId,
       userId: options.userId,
+      securityLevel: CredentialSecurityLevel.software,
+      deviceIntegrity: true,
     })
 
     const signedPayload = encodeSignedPayload(payload)
@@ -141,7 +143,7 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
       signature,
       signatureFormat: 'der' as const,
       signedPayload,
-      compromisedDeviceSignal: options.detectCompromisedDevice ? false : undefined,
+      deviceIntegrity: true,
     }
   }
 
@@ -185,6 +187,8 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
       challenge: options.challenge,
       credentialId: resolved.credentialId,
       userId: resolved.userId,
+      securityLevel: resolved.securityLevel,
+      deviceIntegrity: true,
     })
 
     const signedPayload = encodeSignedPayload(payload)
@@ -199,7 +203,7 @@ export class BiometricCredentialWeb extends WebPlugin implements BiometricCreden
       algorithm: resolved.algorithm,
       securityLevel: resolved.securityLevel,
       usedBiometry: true,
-      compromisedDeviceSignal: options.detectCompromisedDevice ? false : undefined,
+      deviceIntegrity: true,
     }
   }
 

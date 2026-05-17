@@ -87,7 +87,6 @@ export interface RegisterCredentialOptions {
   requireStrongBiometry?: boolean
   requireHardwareBackedKey?: boolean
   invalidateOnBiometricEnrollmentChange?: boolean
-  detectCompromisedDevice?: boolean
   iosPromptReason?: string
   androidTitle?: string
   androidSubtitle?: string
@@ -102,6 +101,13 @@ export interface RegisterCredentialResult {
   securityLevel: CredentialSecurityLevel
   signature: string
   signatureFormat: 'der'
+  /**
+   * Base64url-encoded canonical JSON payload that was signed.
+   * Includes securityLevel and deviceIntegrity inside the signed data,
+   * so the server can trust these values after verifying the signature.
+   * Payload version v:2 schema:
+   * { v:2, type, challenge, credentialId, userId, algorithm, securityLevel, deviceIntegrity }
+   */
   signedPayload: string
   /**
    * DER-encoded X.509 certificate chain from Android Key Attestation.
@@ -111,7 +117,11 @@ export interface RegisterCredentialResult {
    * Only present on Android when attestation is supported by the device.
    */
   attestationCertificateChain?: string[]
-  compromisedDeviceSignal?: boolean
+  /**
+   * true when all device integrity checks pass (no root, no Frida, verified boot, etc).
+   * This value is also embedded in the signed payload for tamper-proof server verification.
+   */
+  deviceIntegrity: boolean
 }
 
 export interface AuthenticateOptions {
@@ -120,7 +130,6 @@ export interface AuthenticateOptions {
   challenge: string
   requireBiometricVerification?: boolean
   requireStrongBiometry?: boolean
-  detectCompromisedDevice?: boolean
   iosPromptReason?: string
   androidTitle?: string
   androidSubtitle?: string
@@ -135,7 +144,11 @@ export interface AuthenticateResult {
   algorithm: string
   securityLevel: CredentialSecurityLevel
   usedBiometry: true
-  compromisedDeviceSignal?: boolean
+  /**
+   * true when all device integrity checks pass (no root, no Frida, verified boot, etc).
+   * This value is also embedded in the signed payload for tamper-proof server verification.
+   */
+  deviceIntegrity: boolean
 }
 
 export interface RemoveCredentialOptions {

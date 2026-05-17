@@ -48,11 +48,6 @@
       <span>requireHardwareBackedKey</span>
     </label>
 
-    <label class="checkbox">
-      <input type="checkbox" [(ngModel)]="detectCompromisedDevice" />
-      <span>detectCompromisedDevice</span>
-    </label>
-
     <button (click)="regenerateChallenge()" [disabled]="loading">Regenerate Challenge</button>
   </section>
 

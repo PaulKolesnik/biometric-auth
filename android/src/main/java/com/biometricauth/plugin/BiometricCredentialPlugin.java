@@ -273,8 +273,10 @@ public class BiometricCredentialPlugin extends Plugin {
 
         boolean invalidateOnChange = call.getBoolean("invalidateOnBiometricEnrollmentChange", true);
         boolean requireHardwareBacked = call.getBoolean("requireHardwareBackedKey", false);
-        boolean detectCompromised = call.getBoolean("detectCompromisedDevice", false);
-        boolean compromisedSignal = detectCompromised && isCompromisedDevice();
+
+        // Always evaluate device integrity and embed the result in the signed payload.
+        // Running unconditionally prevents Frida from simply flipping a boolean gate.
+        boolean deviceIntegrity = !isCompromisedDevice();
 
         String alias = keyAliasFor(credentialId);
         byte[] challengeBytes = Base64.decode(challenge, Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
@@ -316,7 +318,7 @@ public class BiometricCredentialPlugin extends Plugin {
                 throw new OperationException(CODE_SIGNATURE_FAILED, "Biometric crypto object is unavailable.");
             }
 
-            String canonical = buildCanonicalPayload("registration", challenge, credentialId, userId);
+            String canonical = buildCanonicalPayload("registration", challenge, credentialId, userId, securityLevel, deviceIntegrity);
             byte[] payloadBytes = canonical.getBytes(StandardCharsets.UTF_8);
             String signedPayload = toBase64Url(payloadBytes);
 
@@ -352,11 +354,9 @@ public class BiometricCredentialPlugin extends Plugin {
             out.put("signature", toBase64Url(signatureBytes));
             out.put("signatureFormat", "der");
             out.put("signedPayload", signedPayload);
+            out.put("deviceIntegrity", deviceIntegrity);
             if (!attestationChain.isEmpty()) {
                 out.put("attestationCertificateChain", new JSONArray(attestationChain));
-            }
-            if (detectCompromised) {
-                out.put("compromisedDeviceSignal", compromisedSignal);
             }
 
             call.resolve(out);
@@ -400,13 +400,10 @@ public class BiometricCredentialPlugin extends Plugin {
             return;
         }
 
-        boolean detectCompromised = call.getBoolean("detectCompromisedDevice", false);
-        boolean compromisedSignal = detectCompromised && isCompromisedDevice();
+        boolean deviceIntegrity = !isCompromisedDevice();
 
         try {
             PrivateKey privateKey = loadPrivateKey(resolved.record.keyAlias);
-            // Signature docs:
-            // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/Signature.html
             Signature signature = Signature.getInstance("SHA256withECDSA");
             signature.initSign(privateKey);
 
@@ -417,13 +414,10 @@ public class BiometricCredentialPlugin extends Plugin {
                     throw new IllegalStateException("Biometric crypto object is unavailable.");
                 }
 
-                String canonical = buildCanonicalPayload("authentication", challenge, resolved.record.credentialId, resolved.record.userId);
+                String canonical = buildCanonicalPayload("authentication", challenge, resolved.record.credentialId, resolved.record.userId, resolved.record.securityLevel, deviceIntegrity);
                 byte[] payloadBytes = canonical.getBytes(StandardCharsets.UTF_8);
                 String signedPayload = toBase64Url(payloadBytes);
 
-                // Signature#update + Signature#sign docs:
-                // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/Signature.html#update(byte%5B%5D)
-                // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/Signature.html#sign()
                 Signature signer = resultCrypto.getSignature();
                 signer.update(payloadBytes);
                 byte[] signatureBytes = signer.sign();
@@ -437,9 +431,7 @@ public class BiometricCredentialPlugin extends Plugin {
                 out.put("algorithm", resolved.record.algorithm);
                 out.put("securityLevel", resolved.record.securityLevel);
                 out.put("usedBiometry", true);
-                if (detectCompromised) {
-                    out.put("compromisedDeviceSignal", compromisedSignal);
-                }
+                out.put("deviceIntegrity", deviceIntegrity);
 
                 call.resolve(out);
             });
@@ -861,18 +853,25 @@ public class BiometricCredentialPlugin extends Plugin {
         return null;
     }
 
-    /** Builds the canonical JSON payload string used for signature verification on backend. */
-    private String buildCanonicalPayload(String type, String challenge, String credentialId, String userId) {
+    /**
+     * Builds the canonical JSON payload string used for signature verification on backend.
+     * Security-critical metadata (securityLevel, deviceIntegrity) is embedded inside the
+     * signed payload so the server can trust these claims even if client-side booleans
+     * are tampered with via runtime instrumentation (e.g. Frida).
+     */
+    private String buildCanonicalPayload(String type, String challenge, String credentialId, String userId, String securityLevel, boolean deviceIntegrity) {
         StringBuilder builder = new StringBuilder();
         builder.append("{");
-        builder.append("\"v\":1,");
+        builder.append("\"v\":2,");
         builder.append("\"type\":").append(JSONObject.quote(type)).append(",");
         builder.append("\"challenge\":").append(JSONObject.quote(challenge)).append(",");
         builder.append("\"credentialId\":").append(JSONObject.quote(credentialId)).append(",");
         if (!isEmpty(userId)) {
             builder.append("\"userId\":").append(JSONObject.quote(userId)).append(",");
         }
-        builder.append("\"algorithm\":\"ES256\"");
+        builder.append("\"algorithm\":\"ES256\",");
+        builder.append("\"securityLevel\":").append(JSONObject.quote(securityLevel)).append(",");
+        builder.append("\"deviceIntegrity\":").append(deviceIntegrity);
         builder.append("}");
         return builder.toString();
     }
