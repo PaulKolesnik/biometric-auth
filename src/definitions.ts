@@ -103,6 +103,14 @@ export interface RegisterCredentialResult {
   signature: string
   signatureFormat: 'der'
   signedPayload: string
+  /**
+   * DER-encoded X.509 certificate chain from Android Key Attestation.
+   * Each entry is a base64 string. The server must validate this chain against
+   * Google's hardware attestation root CA and parse the attestation extension
+   * (OID 1.3.6.1.4.1.11129.2.1.17) to verify the key was generated in TEE/StrongBox.
+   * Only present on Android when attestation is supported by the device.
+   */
+  attestationCertificateChain?: string[]
   compromisedDeviceSignal?: boolean
 }
 
